@@ -147,7 +147,7 @@ Edita tu archivo de configuración MCP (ej: `~/Library/Application Support/Claud
   "mcpServers": {
     "codebase-search": {
       "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/.venv/bin/fastmcp",
-      "args": ["run"],
+      "args": ["run", "fastmcp.json"],
       "cwd": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp",
       "alwaysAllow": ["superior_codebase_search", "superior_codebase_rerank"]
     }
