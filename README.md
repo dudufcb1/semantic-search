@@ -146,29 +146,33 @@ Edita tu archivo de configuración MCP (ej: `~/Library/Application Support/Claud
 {
   "mcpServers": {
     "codebase-search": {
-      "command": "fastmcp",
-      "args": ["run"],
-      "cwd": "/ruta/completa/a/python-mcp",
+      "command": "uv",
+      "args": ["run", "fastmcp", "run"],
+      "cwd": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp",
       "alwaysAllow": ["superior_codebase_search", "superior_codebase_rerank"]
     }
   }
 }
 ```
 
-O usando `uv`:
+**Nota:** Cambia la ruta `cwd` a la ubicación donde clonaste el repositorio.
+
+O usando el script de inicio (más robusto):
 
 ```json
 {
   "mcpServers": {
     "codebase-search": {
-      "command": "uv",
-      "args": ["run", "fastmcp", "run"],
+      "command": "/ruta/completa/a/python-mcp/start.sh",
+      "args": [],
       "cwd": "/ruta/completa/a/python-mcp",
       "alwaysAllow": ["superior_codebase_search", "superior_codebase_rerank"]
     }
   }
 }
 ```
+
+**Nota:** Asegúrate de que `uv` esté instalado y en el PATH del sistema. Si tienes problemas, usa el script `start.sh`.
 
 ## Tools disponibles
 
