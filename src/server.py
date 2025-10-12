@@ -4,10 +4,16 @@ from typing import Optional, Literal
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 
-from .config import settings
-from .embedder import Embedder
-from .judge import Judge, SearchResult as JudgeSearchResult
-from .qdrant_store import QdrantStore, SearchResult
+try:
+    from .config import settings
+    from .embedder import Embedder
+    from .judge import Judge, SearchResult as JudgeSearchResult
+    from .qdrant_store import QdrantStore
+except ImportError:
+    from config import settings
+    from embedder import Embedder
+    from judge import Judge, SearchResult as JudgeSearchResult
+    from qdrant_store import QdrantStore, SearchResult
 
 
 # Initialize FastMCP server
