@@ -278,7 +278,7 @@ async def superior_codebase_rerank(
         raise ToolError(f"Error al reordenar resultados: {error_msg}")
 
 
-# Entry point for fastmcp CLI
+# Entry point for direct execution
 if __name__ == "__main__":
     print("[MCP] Servidor `codebase-search` inicializado y listo.", file=sys.stderr)
     mcp.run()
