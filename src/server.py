@@ -22,40 +22,28 @@ mcp = FastMCP(
     version="0.1.0"
 )
 
-# Global services (initialized lazily)
-embedder = None
-judge = None
-qdrant_store = None
+# Initialize services
+embedder = Embedder(
+    provider=settings.embedder_provider,
+    api_key=settings.embedder_api_key,
+    model_id=settings.embedder_model_id,
+    base_url=settings.embedder_base_url
+)
 
+judge = Judge(
+    provider=settings.judge_provider,
+    api_key=settings.judge_api_key,
+    model_id=settings.judge_model_id,
+    max_tokens=settings.judge_max_tokens,
+    temperature=settings.judge_temperature,
+    base_url=settings.judge_base_url,
+    system_prompt=settings.judge_system_prompt
+)
 
-def _init_services():
-    """Initialize services lazily."""
-    global embedder, judge, qdrant_store
-
-    if embedder is None:
-        embedder = Embedder(
-            provider=settings.embedder_provider,
-            api_key=settings.embedder_api_key,
-            model_id=settings.embedder_model_id,
-            base_url=settings.embedder_base_url
-        )
-
-    if judge is None:
-        judge = Judge(
-            provider=settings.judge_provider,
-            api_key=settings.judge_api_key,
-            model_id=settings.judge_model_id,
-            max_tokens=settings.judge_max_tokens,
-            temperature=settings.judge_temperature,
-            base_url=settings.judge_base_url,
-            system_prompt=settings.judge_system_prompt
-        )
-
-    if qdrant_store is None:
-        qdrant_store = QdrantStore(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key
-        )
+qdrant_store = QdrantStore(
+    url=settings.qdrant_url,
+    api_key=settings.qdrant_api_key
+)
 
 
 def _format_search_results(query: str, workspace_path: str, results: list[SearchResult]) -> str:
@@ -126,19 +114,16 @@ async def superior_codebase_search(
         Resultados de búsqueda formateados como texto
     """
     try:
-        # Initialize services
-        _init_services()
-
         # Log request
         if ctx:
             await ctx.info(f"[Search] Query: {query}, Workspace: {workspace_path}, Path: {path}")
         else:
             print(f"[Search] Query: {query}, Workspace: {workspace_path}, Path: {path}", file=sys.stderr)
-
+        
         # Validate inputs
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
-
+        
         # Use default workspace if not provided
         effective_workspace = workspace_path or settings.default_workspace_path
         if not effective_workspace:
@@ -198,19 +183,16 @@ async def superior_codebase_rerank(
         Resultados reordenados formateados como texto, opcionalmente con resumen
     """
     try:
-        # Initialize services
-        _init_services()
-
         # Log request
         if ctx:
             await ctx.info(f"[Rerank] Query: {query}, Workspace: {workspace_path}, Mode: {mode}")
         else:
             print(f"[Rerank] Query: {query}, Workspace: {workspace_path}, Mode: {mode}", file=sys.stderr)
-
+        
         # Validate inputs
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
-
+        
         # Use default workspace if not provided
         effective_workspace = workspace_path or settings.default_workspace_path
         if not effective_workspace:
