@@ -146,8 +146,8 @@ Edita tu archivo de configuración MCP (ej: `~/Library/Application Support/Claud
 {
   "mcpServers": {
     "codebase-search": {
-      "command": "/home/eduardo/.local/bin/uv",
-      "args": ["run", "fastmcp", "run"],
+      "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/.venv/bin/fastmcp",
+      "args": ["run"],
       "cwd": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp",
       "alwaysAllow": ["superior_codebase_search", "superior_codebase_rerank"]
     }
@@ -155,9 +155,7 @@ Edita tu archivo de configuración MCP (ej: `~/Library/Application Support/Claud
 }
 ```
 
-**Notas:**
-- Cambia la ruta `cwd` a la ubicación donde clonaste el repositorio
-- Cambia `/home/eduardo/.local/bin/uv` a la ruta donde está instalado `uv` en tu sistema (ejecuta `which uv` para encontrarla)
+**Nota:** Cambia las rutas a la ubicación donde clonaste el repositorio.
 
 O usando el script de inicio (más robusto):
 
