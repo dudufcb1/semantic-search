@@ -16,18 +16,23 @@ los tools `superior_codebase_search` y `superior_codebase_rerank` vía transport
 
 ## Instalación
 
-### Opción 1: Usando `uv` (recomendado)
-
+1. Clonar el repositorio:
 ```bash
-cd python-mcp
-uv sync
+git clone https://github.com/dudufcb1/llm_codebase_search_python.git
+cd llm_codebase_search_python/python-mcp
 ```
 
-### Opción 2: Usando `pip`
-
+2. Crear entorno virtual e instalar dependencias:
 ```bash
-cd python-mcp
-pip install -e .
+python3 -m venv venv
+source venv/bin/activate  # En Windows: venv\Scripts\activate
+pip install fastmcp qdrant-client httpx pydantic pydantic-settings python-dotenv
+```
+
+3. Configurar variables de entorno:
+```bash
+cp .env.example .env
+# Editar .env con tu configuración
 ```
 
 ## Configuración
@@ -116,43 +121,68 @@ MCP_CODEBASE_SEARCH_MAX_RESULTS=20
 SEARCH_MAX_RESULTS=20
 ```
 
-## Ejecución
+## Integración con Claude Desktop
 
-### Usando FastMCP CLI
+### Configuración JSON (Claude Desktop)
 
-```bash
-cd python-mcp
-fastmcp run
-```
-
-O especificando el archivo de configuración:
-
-```bash
-fastmcp run fastmcp.json
-```
-
-### Usando Python directamente
-
-```bash
-cd python-mcp
-python src/server.py
-```
-
-## Configuración en Claude Desktop / Cline
-
-Edita tu archivo de configuración MCP (ej: `~/Library/Application Support/Claude/claude_desktop_config.json`):
+Agregar al archivo de configuración de Claude Desktop:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "codebase-search": {
-      "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/.venv/bin/python",
-      "args": ["-m", "fastmcp", "run"],
-      "cwd": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp",
-      "alwaysAllow": ["superior_codebase_search", "superior_codebase_rerank"]
+      "command": "/ruta/absoluta/a/python-mcp/venv/bin/python",
+      "args": [
+        "/ruta/absoluta/a/python-mcp/src/server.py"
+      ],
+      "alwaysAllow": [
+        "superior_codebase_search",
+        "superior_codebase_rerank"
+      ]
     }
   }
 }
+```
+
+**Ejemplo real:**
+```json
+{
+  "mcpServers": {
+    "codebase-search": {
+      "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python",
+      "args": [
+        "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server.py"
+      ],
+      "alwaysAllow": [
+        "superior_codebase_search",
+        "superior_codebase_rerank"
+      ]
+    }
+  }
+}
+```
+
+### Configuración TOML (Cline, Roo Coder, etc.)
+
+Agregar al archivo de configuración MCP (`.mcp/config.toml` o similar):
+
+```toml
+[mcp_servers.codebase-search]
+type = "stdio"
+command = "/ruta/absoluta/a/python-mcp/venv/bin/python"
+args = ["/ruta/absoluta/a/python-mcp/src/server.py"]
+timeout = 3600
+```
+
+**Ejemplo real:**
+```toml
+[mcp_servers.codebase-search]
+type = "stdio"
+command = "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python"
+args = ["/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server.py"]
+timeout = 3600
 ```
 
 **Nota:** Cambia las rutas a la ubicación donde clonaste el repositorio.
