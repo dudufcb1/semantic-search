@@ -1,7 +1,17 @@
 """Configuration management using Pydantic Settings."""
+import os
+from pathlib import Path
 from typing import Literal, Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Get the directory where this file is located
+_CONFIG_DIR = Path(__file__).parent
+# Go up one level to the project root
+_PROJECT_ROOT = _CONFIG_DIR.parent
+# Path to .env file
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -11,7 +21,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file="../.env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"
