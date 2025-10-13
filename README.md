@@ -45,6 +45,11 @@ MCP_CODEBASE_WORKSPACE=/ruta/absoluta/al/workspace
 # o
 WORKSPACE_PATH=/ruta/absoluta/al/workspace
 
+# Modo de colección (opcional - default: "default")
+# "default" = calcula colección con hash de workspace_path
+# "codebase-indexer" = requiere qdrantCollection explícito del agente
+MCP_CODEBASE_COLLECTION_SOURCE=default
+
 # Qdrant (requerido)
 MCP_CODEBASE_QDRANT_URL=http://localhost:6333
 # o
@@ -123,11 +128,17 @@ SEARCH_MAX_RESULTS=20
 
 ## Integración con Claude Desktop
 
-### Configuración JSON (Claude Desktop)
+Este proyecto ofrece **DOS servidores MCP** para diferentes casos de uso:
 
-Agregar al archivo de configuración de Claude Desktop:
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+### Servidor 1: `server.py` (DEFAULT MODE)
+
+**Uso:** Para IDEs/clientes que NO usan `code-index-cli` y calculan el nombre de colección automáticamente usando hash SHA256 del workspace path.
+
+**Tools disponibles:**
+- `superior_codebase_search` - Búsqueda semántica simple
+- `superior_codebase_rerank` - Búsqueda con reordenamiento LLM
+
+**Configuración JSON (Claude Desktop):**
 
 ```json
 {
@@ -164,9 +175,51 @@ Agregar al archivo de configuración de Claude Desktop:
 }
 ```
 
+### Servidor 2: `server_local.py` (LOCAL MODE - code-index-cli compatible)
+
+**Uso:** Para clientes que usan `code-index-cli` para indexar y mantener el índice actualizado en tiempo real. El nombre de colección se lee desde `.codebase/state.json`.
+
+**Tools disponibles:**
+- `superior_codebase_rerank` - SOLO rerank (requiere `qdrantCollection` explícito)
+
+**Configuración JSON (Claude Desktop):**
+
+```json
+{
+  "mcpServers": {
+    "codebase-search-local": {
+      "command": "/ruta/absoluta/a/python-mcp/venv/bin/python",
+      "args": [
+        "/ruta/absoluta/a/python-mcp/src/server_local.py"
+      ],
+      "alwaysAllow": [
+        "superior_codebase_rerank"
+      ]
+    }
+  }
+}
+```
+
+**Ejemplo real:**
+```json
+{
+  "mcpServers": {
+    "codebase-search-local": {
+      "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python",
+      "args": [
+        "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server_local.py"
+      ],
+      "alwaysAllow": [
+        "superior_codebase_rerank"
+      ]
+    }
+  }
+}
+```
+
 ### Configuración TOML (Cline, Roo Coder, etc.)
 
-Agregar al archivo de configuración MCP (`.mcp/config.toml` o similar):
+**Servidor DEFAULT (`server.py`):**
 
 ```toml
 [mcp_servers.codebase-search]
@@ -182,6 +235,25 @@ timeout = 3600
 type = "stdio"
 command = "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python"
 args = ["/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server.py"]
+timeout = 3600
+```
+
+**Servidor LOCAL (`server_local.py`):**
+
+```toml
+[mcp_servers.codebase-search-local]
+type = "stdio"
+command = "/ruta/absoluta/a/python-mcp/venv/bin/python"
+args = ["/ruta/absoluta/a/python-mcp/src/server_local.py"]
+timeout = 3600
+```
+
+**Ejemplo real:**
+```toml
+[mcp_servers.codebase-search-local]
+type = "stdio"
+command = "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python"
+args = ["/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server_local.py"]
 timeout = 3600
 ```
 
@@ -206,7 +278,9 @@ O usando el script de inicio (más robusto):
 
 ## Tools disponibles
 
-### `superior_codebase_search`
+### Servidor DEFAULT (`server.py`)
+
+#### `superior_codebase_search`
 
 Búsqueda semántica en código indexado.
 
@@ -224,13 +298,13 @@ Búsqueda semántica en código indexado.
 }
 ```
 
-### `superior_codebase_rerank`
+#### `superior_codebase_rerank`
 
 Búsqueda semántica con reordenamiento inteligente usando LLM.
 
 **Parámetros:**
 - `query` (string, obligatorio): Texto natural a buscar
-- `workspacePath` (string, opcional): Ruta absoluta del workspace
+- `workspacePath` (string, obligatorio): Ruta absoluta del workspace
 - `path` (string, opcional): Prefijo de ruta para filtrar resultados
 - `mode` (string, opcional): "rerank" (default) o "summary"
 
@@ -243,6 +317,31 @@ Búsqueda semántica con reordenamiento inteligente usando LLM.
 }
 ```
 
+### Servidor LOCAL (`server_local.py`)
+
+#### `superior_codebase_rerank`
+
+Búsqueda semántica con reordenamiento inteligente usando LLM. **Requiere colección explícita desde `.codebase/state.json`.**
+
+**Parámetros:**
+- `query` (string, obligatorio): Texto natural a buscar
+- `qdrantCollection` (string, obligatorio): Nombre de colección Qdrant desde `.codebase/state.json`
+- `path` (string, opcional): Prefijo de ruta para filtrar resultados
+- `mode` (string, opcional): "rerank" (default) o "summary"
+
+**Ejemplo:**
+```json
+{
+  "query": "authentication logic",
+  "qdrantCollection": "codebase-f93e99958acc444e"
+}
+```
+
+**Workflow del agente:**
+1. Leer `.codebase/state.json` del workspace
+2. Extraer el campo `qdrantCollection`
+3. Pasar ese valor en el tool call
+
 ## Estructura del Proyecto
 
 ```
@@ -252,7 +351,8 @@ python-mcp/
 ├── README.md             # Este archivo
 ├── .env                  # Variables de entorno (no versionado)
 ├── src/
-│   ├── server.py         # Servidor FastMCP principal
+│   ├── server.py         # Servidor DEFAULT (hash automático)
+│   ├── server_local.py   # Servidor LOCAL (code-index-cli compatible)
 │   ├── config.py         # Configuración con Pydantic
 │   ├── embedder.py       # Cliente de embeddings
 │   ├── judge.py          # Cliente LLM para reranking
@@ -268,6 +368,74 @@ python-mcp/
 - ✅ Gestión de dependencias con `uv`
 - ✅ Configuración declarativa con `fastmcp.json`
 - ✅ Mejor manejo de errores con `ToolError`
+
+## Compatibilidad con code-index-cli
+
+Este servidor MCP puede operar en dos modos según la variable de entorno `MCP_CODEBASE_COLLECTION_SOURCE`:
+
+### Modo 1: `default` (por defecto)
+
+El servidor calcula automáticamente el nombre de colección usando SHA256 de la ruta del workspace.
+
+**Configuración (.env):**
+```bash
+MCP_CODEBASE_COLLECTION_SOURCE=default  # o simplemente omitir esta variable
+```
+
+**Uso de los tools:**
+```json
+{
+  "query": "authentication logic",
+  "workspacePath": "/home/user/my-project"
+}
+```
+
+El servidor automáticamente:
+1. Normaliza la ruta del workspace
+2. Calcula SHA256 de la ruta
+3. Genera nombre de colección: `ws-{hash[:16]}`
+
+### Modo 2: `codebase-indexer`
+
+Compatible con [code-index-cli](https://github.com/tu-repo/code-index-cli) que mantiene el índice actualizado en tiempo real.
+
+**Configuración (.env):**
+```bash
+MCP_CODEBASE_COLLECTION_SOURCE=codebase-indexer
+```
+
+**Uso de los tools:**
+
+El agente debe leer el archivo `.codebase/state.json` del workspace y pasar el `qdrantCollection`:
+
+1. **Localizar:** `<workspace>/.codebase/state.json`
+2. **Leer el contenido:**
+```json
+{
+  "workspacePath": "/home/user/my-project",
+  "qdrantCollection": "codebase-f93e99958acc444e",
+  "createdAt": "2025-10-13T08:09:19.732Z",
+  "updatedAt": "2025-10-13T20:08:42.023Z"
+}
+```
+3. **Pasar el `qdrantCollection` en el tool call:**
+```json
+{
+  "query": "authentication logic",
+  "qdrantCollection": "codebase-f93e99958acc444e"
+}
+```
+
+**¿Por qué este modo?**
+- `code-index-cli` corre en una pestaña separada de Claude Code/Codex manteniendo el índice actualizado
+- Tu IDE usa este MCP para buscar en el índice en tiempo real
+- No necesitas mantener dos índices separados
+- El nombre de colección es generado una vez por `code-index-cli` (UUID random) y guardado en `.codebase/state.json`
+
+**Importante:**
+- En modo `codebase-indexer`, el parámetro `workspacePath` se ignora
+- El parámetro `qdrantCollection` es **obligatorio** en este modo
+- Si no se proporciona `qdrantCollection`, el servidor retorna un error instructivo
 
 ## Desarrollo
 

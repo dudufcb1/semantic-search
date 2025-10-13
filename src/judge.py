@@ -212,39 +212,68 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
             return content.strip()
     
     def _process_response(self, response: str, original_results: list[SearchResult]) -> list[RerankResult]:
-        """Process LLM response and create reranked results."""
+        """Process LLM response and create reranked results.
+
+        If JSON parsing fails, returns original results as RerankResult with relevancia = score.
+        """
         # Try to extract JSON from response
         json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', response)
         if json_match:
             json_str = json_match.group(1)
         else:
             json_str = response
-        
+
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            raise Exception(f"Failed to parse JSON response: {e}")
-        
+            # FALLBACK: Return original results as-is
+            print(f"[Judge] Warning: Failed to parse JSON, using original order: {e}", flush=True)
+            return [
+                RerankResult(
+                    file_path=r.file_path,
+                    code_chunk=r.code_chunk,
+                    start_line=r.start_line,
+                    end_line=r.end_line,
+                    score=r.score,
+                    relevancia=r.score,  # Use original score as relevancia
+                    razon="[Warning: LLM response parsing failed, using original semantic search score]"
+                )
+                for r in original_results
+            ]
+
         if "reranked" not in data or not isinstance(data["reranked"], list):
-            raise Exception("Response does not contain 'reranked' array")
-        
+            # FALLBACK: Return original results as-is
+            print(f"[Judge] Warning: Invalid response structure, using original order", flush=True)
+            return [
+                RerankResult(
+                    file_path=r.file_path,
+                    code_chunk=r.code_chunk,
+                    start_line=r.start_line,
+                    end_line=r.end_line,
+                    score=r.score,
+                    relevancia=r.score,
+                    razon="[Warning: LLM response invalid, using original semantic search score]"
+                )
+                for r in original_results
+            ]
+
         # Create lookup for original results
         results_map = {r.file_path: r for r in original_results}
-        
+
         # Build reranked results
         reranked = []
         for item in data["reranked"]:
             file_path = item.get("filePath")
             relevancia = item.get("relevancia", 0.0)
             razon = item.get("razon")
-            
+
             if not file_path:
                 continue
-            
+
             original = results_map.get(file_path)
             if not original:
                 continue
-            
+
             reranked.append(RerankResult(
                 file_path=original.file_path,
                 code_chunk=original.code_chunk,
@@ -254,7 +283,7 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
                 relevancia=relevancia,
                 razon=razon
             ))
-        
+
         return reranked
     
     async def rerank(self, query: str, results: list[SearchResult]) -> list[RerankResult]:

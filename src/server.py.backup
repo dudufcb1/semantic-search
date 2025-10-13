@@ -92,57 +92,108 @@ def _format_rerank_results(query: str, workspace_path: str, reranked: list, summ
     return '\n'.join(formatted_parts)
 
 
-@mcp.tool
-async def superior_codebase_search(
-    query: str,
-    workspace_path: Optional[str] = None,
-    path: Optional[str] = None,
-    ctx: Context = None
-) -> str:
-    """Realiza una búsqueda semántica en el código indexado utilizando los embeddings existentes.
-    
-    IMPORTANTE: Debes especificar el workspace a buscar usando 'workspacePath'.
-    Ejemplo: Si el usuario menciona 'independent-embeddings-indexer', usa esa ruta exacta.
-    
-    Args:
-        query: Texto natural a buscar en el código (ej: 'función de autenticación', 'manejo de errores')
-        workspace_path: Ruta absoluta del workspace a buscar (REQUERIDO)
-        path: Prefijo de ruta opcional para filtrar resultados (ej: 'src/auth')
-        ctx: FastMCP context for logging
-        
-    Returns:
-        Resultados de búsqueda formateados como texto
-    """
-    try:
-        # Log request
-        if ctx:
-            await ctx.info(f"[Search] Query: {query}, Workspace: {workspace_path}, Path: {path}")
+# Build dynamic docstring based on mode
+if settings.collection_source == "codebase-indexer":
+    _SEARCH_DOC = """Búsqueda semántica en código indexado.
+
+⚙️ MODO ACTUAL: CODEBASE-INDEXER
+
+📌 MODO CODEBASE-INDEXER - Lee .codebase/state.json
+
+PARÁMETROS:
+- query (requerido): Texto a buscar
+- qdrantCollection (REQUERIDO): Nombre de colección desde workspace/.codebase/state.json
+- path (opcional): Prefijo de ruta para filtrar resultados
+
+INSTRUCCIONES MODO CODEBASE-INDEXER:
+1. Ubicar archivo: <workspace>/.codebase/state.json
+2. Leer campo "qdrantCollection" del JSON
+3. Pasar ese valor como parámetro qdrantCollection
+4. NO uses workspacePath, será ignorado
+
+Ejemplo:
+{"query": "auth", "qdrantCollection": "codebase-f93e99958acc444e"}
+"""
+else:
+    _SEARCH_DOC = """Búsqueda semántica en código indexado.
+
+⚙️ MODO ACTUAL: DEFAULT
+
+📌 MODO DEFAULT - Usa workspace path
+
+PARÁMETROS:
+- query (requerido): Texto a buscar
+- workspacePath (REQUERIDO): Ruta absoluta del workspace
+- path (opcional): Prefijo de ruta para filtrar resultados
+
+INSTRUCCIONES MODO DEFAULT:
+1. Proporcionar ruta absoluta del workspace
+2. El servidor calculará automáticamente la colección (hash SHA256)
+3. NO uses qdrantCollection, será ignorado
+
+Ejemplo:
+{"query": "auth", "workspacePath": "/home/user/project"}
+"""
+
+
+# Register tools conditionally based on settings
+if settings.enable_search:
+    @mcp.tool
+    async def superior_codebase_search(
+        query: str,
+        workspace_path: Optional[str] = None,
+        path: Optional[str] = None,
+        qdrant_collection: Optional[str] = None,
+        ctx: Context = None
+    ) -> str:
+        try:
+            # Log request
+            if ctx:
+                await ctx.info(f"[Search] Mode: {settings.collection_source}, Query: {query}")
         else:
-            print(f"[Search] Query: {query}, Workspace: {workspace_path}, Path: {path}", file=sys.stderr)
-        
-        # Validate inputs
+            print(f"[Search] Mode: {settings.collection_source}, Query: {query}", file=sys.stderr)
+
+        # Validate inputs based on collection source mode
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
-        
-        # Use default workspace if not provided
-        effective_workspace = workspace_path or settings.default_workspace_path
-        if not effective_workspace:
-            raise ToolError(
-                "Debes especificar 'workspacePath' o configurar MCP_CODEBASE_WORKSPACE.\n\n"
-                "El cliente MCP debe enviar el workspace en los argumentos.\n\n"
-                'Ejemplo: { "query": "login function", "workspacePath": "/path/to/project" }'
-            )
+
+        # Mode-specific validation
+        if settings.collection_source == "codebase-indexer":
+            # MODE: codebase-indexer - requires explicit collection name
+            if not qdrant_collection:
+                raise ToolError(
+                    "MODO: codebase-indexer\n\n"
+                    "Debes proporcionar 'qdrantCollection' en este modo.\n\n"
+                    "El agente debe leer el archivo .codebase/state.json del workspace:\n"
+                    "1. Localizar: <workspace>/.codebase/state.json\n"
+                    "2. Leer el campo: qdrantCollection\n"
+                    "3. Pasar ese valor en el parámetro qdrantCollection\n\n"
+                    'Ejemplo: {"query": "auth", "qdrantCollection": "codebase-f93e99958acc444e"}'
+                )
+            effective_workspace = qdrant_collection  # Use collection as identifier for logging
+            collection_to_use = qdrant_collection
+        else:
+            # MODE: default - requires workspace_path
+            effective_workspace = workspace_path or settings.default_workspace_path
+            if not effective_workspace:
+                raise ToolError(
+                    "MODO: default\n\n"
+                    "Debes especificar 'workspacePath' o configurar MCP_CODEBASE_WORKSPACE.\n\n"
+                    'Ejemplo: {"query": "auth", "workspacePath": "/path/to/project"}'
+                )
+            collection_to_use = None  # Will be calculated from workspace_path
         
         # Create embedding
         vector = await embedder.create_embedding(query)
-        
+
         # Search in Qdrant
         results = await qdrant_store.search(
             vector=vector,
             workspace_path=effective_workspace,
             directory_prefix=path,
             min_score=settings.search_min_score,
-            max_results=settings.search_max_results
+            max_results=settings.search_max_results,
+            collection_name=collection_to_use
         )
         
         # Format and return results
@@ -165,6 +216,7 @@ async def superior_codebase_rerank(
     workspace_path: Optional[str] = None,
     path: Optional[str] = None,
     mode: Literal["rerank", "summary"] = "rerank",
+    qdrant_collection: Optional[str] = None,
     ctx: Context = None
 ) -> str:
     """Realiza una búsqueda semántica y reordena los resultados usando un LLM Judge.
@@ -172,11 +224,27 @@ async def superior_codebase_rerank(
     Esta herramienta primero ejecuta una búsqueda semántica y luego usa un modelo de lenguaje
     para evaluar y reordenar los resultados según su relevancia real a la consulta.
 
+    MODO DE OPERACIÓN:
+    Este servidor puede operar en dos modos según la variable de entorno MCP_CODEBASE_COLLECTION_SOURCE:
+
+    1. MODO "default" (por defecto):
+       - Requiere: workspacePath (ruta absoluta del workspace)
+       - Calcula automáticamente el nombre de colección usando hash SHA256
+       - Ejemplo: {"query": "auth logic", "workspacePath": "/home/user/my-project", "mode": "summary"}
+
+    2. MODO "codebase-indexer":
+       - Requiere: qdrantCollection (nombre de colección explícito)
+       - Compatible con code-index-cli que mantiene el índice actualizado
+       - El agente debe leer el archivo .codebase/state.json del workspace para obtener qdrantCollection
+       - Ejemplo: {"query": "auth logic", "qdrantCollection": "codebase-f93e99958acc444e", "mode": "summary"}
+       - Para obtener qdrantCollection: leer workspace/.codebase/state.json["qdrantCollection"]
+
     Args:
         query: Texto natural a buscar en el código
-        workspace_path: Ruta absoluta del workspace a buscar (REQUERIDO)
+        workspace_path: [MODO default] Ruta absoluta del workspace a buscar
         path: Prefijo de ruta opcional para filtrar resultados
         mode: Modo de operación - "rerank" solo reordena, "summary" incluye resumen
+        qdrant_collection: [MODO codebase-indexer] Nombre de colección Qdrant desde .codebase/state.json
         ctx: FastMCP context for logging
 
     Returns:
@@ -185,17 +253,40 @@ async def superior_codebase_rerank(
     try:
         # Log request
         if ctx:
-            await ctx.info(f"[Rerank] Query: {query}, Workspace: {workspace_path}, Mode: {mode}")
+            await ctx.info(f"[Rerank] Mode: {settings.collection_source}, Query: {query}, Mode: {mode}")
         else:
-            print(f"[Rerank] Query: {query}, Workspace: {workspace_path}, Mode: {mode}", file=sys.stderr)
+            print(f"[Rerank] Mode: {settings.collection_source}, Query: {query}, Mode: {mode}", file=sys.stderr)
 
-        # Validate inputs
+        # Validate inputs based on collection source mode
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
 
-        if not workspace_path:
-            raise ToolError("El parámetro 'workspacePath' es requerido.")
-
+        # Mode-specific validation
+        if settings.collection_source == "codebase-indexer":
+            # MODE: codebase-indexer - requires explicit collection name
+            if not qdrant_collection:
+                raise ToolError(
+                    "MODO: codebase-indexer\n\n"
+                    "Debes proporcionar 'qdrantCollection' en este modo.\n\n"
+                    "El agente debe leer el archivo .codebase/state.json del workspace:\n"
+                    "1. Localizar: <workspace>/.codebase/state.json\n"
+                    "2. Leer el campo: qdrantCollection\n"
+                    "3. Pasar ese valor en el parámetro qdrantCollection\n\n"
+                    'Ejemplo: {"query": "auth", "qdrantCollection": "codebase-f93e99958acc444e", "mode": "summary"}'
+                )
+            effective_workspace = qdrant_collection  # Use collection as identifier for logging
+            collection_to_use = qdrant_collection
+        else:
+            # MODE: default - requires workspace_path
+            effective_workspace = workspace_path or settings.default_workspace_path
+            if not effective_workspace:
+                raise ToolError(
+                    "MODO: default\n\n"
+                    "Debes especificar 'workspacePath' o configurar MCP_CODEBASE_WORKSPACE.\n\n"
+                    'Ejemplo: {"query": "auth", "workspacePath": "/path/to/project", "mode": "summary"}'
+                )
+            collection_to_use = None  # Will be calculated from workspace_path
+        
         # Step 1: Perform initial search
         if ctx:
             await ctx.info(f"[Rerank] Buscando resultados para query: '{query}'")
@@ -203,14 +294,15 @@ async def superior_codebase_rerank(
         vector = await embedder.create_embedding(query)
         search_results = await qdrant_store.search(
             vector=vector,
-            workspace_path=workspace_path,
+            workspace_path=effective_workspace,
             directory_prefix=path,
             min_score=settings.search_min_score,
-            max_results=settings.search_max_results
+            max_results=settings.search_max_results,
+            collection_name=collection_to_use
         )
         
         if not search_results:
-            return f'No se encontraron resultados para "{query}" en el workspace "{workspace_path}".'
+            return f'No se encontraron resultados para "{query}" en el workspace "{effective_workspace}".'
         
         # Step 2: Convert to Judge format
         judge_results = [
@@ -241,7 +333,7 @@ async def superior_codebase_rerank(
             summary = await judge.summarize(query, judge_results)
         
         # Format and return results
-        return _format_rerank_results(query, workspace_path, reranked, summary)
+        return _format_rerank_results(query, effective_workspace, reranked, summary)
         
     except ToolError:
         raise

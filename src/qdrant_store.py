@@ -103,30 +103,35 @@ class QdrantStore:
         workspace_path: str,
         directory_prefix: Optional[str] = None,
         min_score: float = 0.4,
-        max_results: int = 20
+        max_results: int = 20,
+        collection_name: Optional[str] = None
     ) -> list[SearchResult]:
         """Search for similar code chunks in the vector store.
-        
+
         Args:
             vector: Query embedding vector
             workspace_path: Workspace path to search in
             directory_prefix: Optional directory prefix to filter results
             min_score: Minimum similarity score threshold
             max_results: Maximum number of results to return
-            
+            collection_name: Optional collection name override. If provided, uses this instead of calculating from workspace_path
+
         Returns:
             List of search results
         """
-        # Normalize workspace path and get collection name
-        normalized_workspace = self._normalize_workspace_path(workspace_path)
-        collection_name = self._get_collection_name(normalized_workspace)
+        # Use provided collection name or calculate from workspace path
+        if collection_name:
+            final_collection_name = collection_name
+        else:
+            normalized_workspace = self._normalize_workspace_path(workspace_path)
+            final_collection_name = self._get_collection_name(normalized_workspace)
         
         # Build filter
         filter_obj = self._build_path_filter(directory_prefix)
         
         # Perform search
         search_result = await self.client.search(
-            collection_name=collection_name,
+            collection_name=final_collection_name,
             query_vector=vector,
             query_filter=filter_obj,
             limit=max_results,

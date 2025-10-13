@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # Default workspace path
     mcp_codebase_workspace: Optional[str] = None
 
+    # Collection source mode: "default" (hash from workspace) or "codebase-indexer" (explicit collection)
+    mcp_codebase_collection_source: str = "default"
+
+    # Tools enable/disable flags
+    mcp_codebase_enable_search: bool = True
+    mcp_codebase_enable_rerank: bool = True
+
     # Qdrant configuration
     mcp_codebase_qdrant_url: str
     mcp_codebase_qdrant_api_key: Optional[str] = None
@@ -134,6 +141,18 @@ class Settings(BaseSettings):
     @property
     def search_max_results(self) -> int:
         return self.mcp_codebase_search_max_results
+
+    @property
+    def collection_source(self) -> str:
+        return self.mcp_codebase_collection_source
+
+    @property
+    def enable_search(self) -> bool:
+        return self.mcp_codebase_enable_search
+
+    @property
+    def enable_rerank(self) -> bool:
+        return self.mcp_codebase_enable_rerank
 
 
 # Global settings instance
