@@ -145,7 +145,7 @@ async def superior_codebase_search(
             await ctx.error(f"[Search] Error: {error_msg}")
         else:
             print(f"[Search] Error: {error_msg}", file=sys.stderr)
-        raise ToolError(f"Error al buscar en el codebase: {error_msg}")
+        raise ToolError("Error al buscar en el codebase")
 
 
 @mcp.tool
@@ -241,13 +241,7 @@ async def superior_codebase_rerank(
                 return f"""Query: {query}
 Workspace: {workspace_path}
 
-=== RESPUESTA CRUDA DEL LLM (JSON malformado - interpretado como texto) ===
-
-{raw_response.strip()}
-
-=== FIN RESPUESTA CRUDA ===
-
-Nota: El JSON del LLM estaba malformado pero el contenido puede ser interpretado como texto."""
+{raw_response.strip()}"""
 
             # If no raw response available, try to get fresh response
             try:
@@ -258,13 +252,7 @@ Nota: El JSON del LLM estaba malformado pero el contenido puede ser interpretado
                 return f"""Query: {query}
 Workspace: {workspace_path}
 
-=== RESPUESTA CRUDA DEL LLM (JSON malformado - interpretado como texto) ===
-
-{raw_response.strip()}
-
-=== FIN RESPUESTA CRUDA ===
-
-Nota: El JSON del LLM estaba malformado pero el contenido puede ser interpretado como texto."""
+{raw_response.strip()}"""
 
             except Exception as inner_e:
                 # Si todo falla, devolver resultados originales
@@ -300,10 +288,12 @@ Nota: El JSON del LLM estaba malformado pero el contenido puede ser interpretado
     except Exception as e:
         error_msg = str(e)
         if ctx:
-            await ctx.error(f"[Rerank] Error: {error_msg}")
+            await ctx.info(f"[Rerank] Fallback to search results due to: {error_msg}")
         else:
-            print(f"[Rerank] Error: {error_msg}", file=sys.stderr)
-        raise ToolError(f"Error al reordenar resultados: {error_msg}")
+            print(f"[Rerank] Fallback to search results due to: {error_msg}", file=sys.stderr)
+
+        # Always return search results instead of error
+        return _format_search_results(query, workspace_path, search_results)
 
 
 # Entry point for fastmcp CLI

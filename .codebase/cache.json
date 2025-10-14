@@ -1,0 +1,12 @@
+{
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/README.md": "86e79d5ae1e5a6800fa75eab5cae4f7c2aee09873d826b520890aa935b64ed3e",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/__init__.py": "581e6254a3d1d01b6274e3a5bd073952de90fbaed126fb733e822a365ecc2d6b",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/config.py": "b08c31c914308ef5d6d8e0b9ea868f8853e34aa1aeddf5073a1e44eaa6bd6cd4",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/embedder.py": "b80356939c7e731eb684400d6a3d9d0da8be491062d670050e8c58000159cd50",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/judge.py": "cc54991324b58c6ac8b1844dcb4670c3e538e407a6a6ae254c1a9096935a7fd0",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/qdrant_store.py": "7089b99ae6d736be1c63835526c95226808a854a4f3c86ebf82f750ac38834e0",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server.py": "f007b13c97c73e657500d6df9b4dff8d52dedd00825be4188bac4cf3af6ca054",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server_local.py": "80a45b5205785cbde4f02c3d2eabea3494562ec02e21a4c270932c827b510f56",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/test_all_tools.py": "ce515e3733930bf43c7550a6986cbd3786ea2038c40f01ecc18a3c0d5bffa5b0",
+  "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/test_search.py": "3086c7bb727f83fec90130dcd9f9839163125b5453756a39afb9acd6241eabdb"
+}

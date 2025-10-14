@@ -57,6 +57,24 @@ qdrant_store = QdrantStore(
 )
 
 
+def _format_search_results(query: str, qdrant_collection: str, results: list[SearchResult]) -> str:
+    """Format search results as text."""
+    if not results:
+        return f'No se encontraron coincidencias para "{query}" en la colección "{qdrant_collection}".'
+
+    formatted_parts = [f'Query: {query}', f'Collection: {qdrant_collection}', '']
+
+    for result in results:
+        formatted_parts.append(f'Ruta: {result.file_path}')
+        formatted_parts.append(f'Score: {result.score:.4f}')
+        formatted_parts.append(f'Líneas: {result.start_line}-{result.end_line}')
+        formatted_parts.append('---')
+        formatted_parts.append(result.code_chunk.strip())
+        formatted_parts.append('')
+
+    return '\n'.join(formatted_parts)
+
+
 def _format_rerank_results(query: str, qdrant_collection: str, reranked: list, summary: Optional[str] = None) -> str:
     """Format reranked results as text."""
     if not reranked:
@@ -180,10 +198,12 @@ async def superior_codebase_rerank(
     except Exception as e:
         error_msg = str(e)
         if ctx:
-            await ctx.error(f"[Rerank LOCAL] Error: {error_msg}")
+            await ctx.info(f"[Rerank LOCAL] Fallback to search results due to: {error_msg}")
         else:
-            print(f"[Rerank LOCAL] Error: {error_msg}", file=sys.stderr)
-        raise ToolError(f"Error al reordenar resultados: {error_msg}")
+            print(f"[Rerank LOCAL] Fallback to search results due to: {error_msg}", file=sys.stderr)
+
+        # Always return search results instead of error
+        return _format_search_results(query, qdrant_collection, search_results)
 
 
 # Entry point for fastmcp CLI
