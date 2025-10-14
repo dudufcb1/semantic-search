@@ -95,58 +95,47 @@ def _format_rerank_results(query: str, workspace_path: str, reranked: list, summ
 @mcp.tool
 async def superior_codebase_search(
     query: str,
-    workspace_path: Optional[str] = None,
-    path: Optional[str] = None,
+    workspace_path: str,
     ctx: Context = None
 ) -> str:
     """Realiza una búsqueda semántica en el código indexado utilizando los embeddings existentes.
-    
-    IMPORTANTE: Debes especificar el workspace a buscar usando 'workspacePath'.
-    Ejemplo: Si el usuario menciona 'independent-embeddings-indexer', usa esa ruta exacta.
-    
+
     Args:
         query: Texto natural a buscar en el código (ej: 'función de autenticación', 'manejo de errores')
         workspace_path: Ruta absoluta del workspace a buscar (REQUERIDO)
-        path: Prefijo de ruta opcional para filtrar resultados (ej: 'src/auth')
         ctx: FastMCP context for logging
-        
+
     Returns:
         Resultados de búsqueda formateados como texto
     """
     try:
         # Log request
         if ctx:
-            await ctx.info(f"[Search] Query: {query}, Workspace: {workspace_path}, Path: {path}")
+            await ctx.info(f"[Search] Query: {query}, Workspace: {workspace_path}")
         else:
-            print(f"[Search] Query: {query}, Workspace: {workspace_path}, Path: {path}", file=sys.stderr)
-        
+            print(f"[Search] Query: {query}, Workspace: {workspace_path}", file=sys.stderr)
+
         # Validate inputs
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
-        
-        # Use default workspace if not provided
-        effective_workspace = workspace_path or settings.default_workspace_path
-        if not effective_workspace:
-            raise ToolError(
-                "Debes especificar 'workspacePath' o configurar MCP_CODEBASE_WORKSPACE.\n\n"
-                "El cliente MCP debe enviar el workspace en los argumentos.\n\n"
-                'Ejemplo: { "query": "login function", "workspacePath": "/path/to/project" }'
-            )
-        
+
+        if not workspace_path or not workspace_path.strip():
+            raise ToolError("El parámetro 'workspace_path' es requerido.")
+
         # Create embedding
         vector = await embedder.create_embedding(query)
-        
+
         # Search in Qdrant
         results = await qdrant_store.search(
             vector=vector,
-            workspace_path=effective_workspace,
-            directory_prefix=path,
+            workspace_path=workspace_path,
+            directory_prefix=None,  # No path filtering
             min_score=settings.search_min_score,
             max_results=settings.search_max_results
         )
-        
+
         # Format and return results
-        return _format_search_results(query, effective_workspace, results)
+        return _format_search_results(query, workspace_path, results)
         
     except ToolError:
         raise
@@ -162,8 +151,7 @@ async def superior_codebase_search(
 @mcp.tool
 async def superior_codebase_rerank(
     query: str,
-    workspace_path: Optional[str] = None,
-    path: Optional[str] = None,
+    workspace_path: str,
     mode: Literal["rerank", "summary"] = "rerank",
     ctx: Context = None
 ) -> str:
@@ -175,7 +163,6 @@ async def superior_codebase_rerank(
     Args:
         query: Texto natural a buscar en el código
         workspace_path: Ruta absoluta del workspace a buscar (REQUERIDO)
-        path: Prefijo de ruta opcional para filtrar resultados
         mode: Modo de operación - "rerank" solo reordena, "summary" incluye resumen
         ctx: FastMCP context for logging
 
@@ -193,8 +180,8 @@ async def superior_codebase_rerank(
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
 
-        if not workspace_path:
-            raise ToolError("El parámetro 'workspacePath' es requerido.")
+        if not workspace_path or not workspace_path.strip():
+            raise ToolError("El parámetro 'workspace_path' es requerido.")
 
         # Step 1: Perform initial search
         if ctx:
@@ -204,7 +191,7 @@ async def superior_codebase_rerank(
         search_results = await qdrant_store.search(
             vector=vector,
             workspace_path=workspace_path,
-            directory_prefix=path,
+            directory_prefix=None,  # No path filtering
             min_score=settings.search_min_score,
             max_results=settings.search_max_results
         )
@@ -227,8 +214,65 @@ async def superior_codebase_rerank(
         # Step 3: Rerank with LLM
         if ctx:
             await ctx.info(f"[Rerank] Reordenando {len(judge_results)} resultados con LLM")
-        
-        reranked = await judge.rerank(query, judge_results)
+
+        try:
+            reranked = await judge.rerank(query, judge_results)
+        except Exception as e:
+            # FALLBACK: Si el Judge falla por JSON malformado, devolver respuesta cruda como texto
+            if ctx:
+                await ctx.info(f"[Rerank] Judge JSON parsing failed, returning raw response as text: {str(e)}")
+            else:
+                print(f"[Rerank] Judge JSON parsing failed, returning raw response as text: {str(e)}", file=sys.stderr)
+
+            # Try to extract raw response from error message or judge's last response
+            raw_response = None
+
+            # Method 1: Extract from error message
+            error_msg = str(e)
+            if "Raw response: " in error_msg:
+                raw_response = error_msg.split("Raw response: ", 1)[1]
+
+            # Method 2: Check if judge stored the response
+            elif hasattr(judge, '_last_raw_response'):
+                raw_response = judge._last_raw_response
+
+            if raw_response:
+                # Return the raw response as text with context
+                return f"""Query: {query}
+Workspace: {workspace_path}
+
+=== RESPUESTA CRUDA DEL LLM (JSON malformado - interpretado como texto) ===
+
+{raw_response.strip()}
+
+=== FIN RESPUESTA CRUDA ===
+
+Nota: El JSON del LLM estaba malformado pero el contenido puede ser interpretado como texto."""
+
+            # If no raw response available, try to get fresh response
+            try:
+                user_prompt = judge._create_user_prompt(query, judge_results, include_summary=(mode == "summary"))
+                raw_response = await judge._call_llm(user_prompt, include_summary=(mode == "summary"))
+
+                # Return the raw response as text with context
+                return f"""Query: {query}
+Workspace: {workspace_path}
+
+=== RESPUESTA CRUDA DEL LLM (JSON malformado - interpretado como texto) ===
+
+{raw_response.strip()}
+
+=== FIN RESPUESTA CRUDA ===
+
+Nota: El JSON del LLM estaba malformado pero el contenido puede ser interpretado como texto."""
+
+            except Exception as inner_e:
+                # Si todo falla, devolver resultados originales
+                if ctx:
+                    await ctx.info(f"[Rerank] Complete fallback to original results: {str(inner_e)}")
+                else:
+                    print(f"[Rerank] Complete fallback to original results: {str(inner_e)}", file=sys.stderr)
+                return _format_search_results(query, workspace_path, search_results)
         
         # Apply max results limit
         reranked = reranked[:settings.reranking_max_results]
@@ -238,7 +282,15 @@ async def superior_codebase_rerank(
         if mode == "summary":
             if ctx:
                 await ctx.info("[Rerank] Generando resumen")
-            summary = await judge.summarize(query, judge_results)
+            try:
+                summary = await judge.summarize(query, judge_results)
+            except Exception as e:
+                # FALLBACK: Si el summary falla, no incluir summary
+                if ctx:
+                    await ctx.info(f"[Rerank] Summary failed, proceeding without summary: {str(e)}")
+                else:
+                    print(f"[Rerank] Summary failed, proceeding without summary: {str(e)}", file=sys.stderr)
+                summary = None
         
         # Format and return results
         return _format_rerank_results(query, workspace_path, reranked, summary)

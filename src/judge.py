@@ -214,7 +214,7 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
     def _process_response(self, response: str, original_results: list[SearchResult]) -> list[RerankResult]:
         """Process LLM response and create reranked results.
 
-        If JSON parsing fails, returns original results as RerankResult with relevancia = score.
+        If JSON parsing fails, raises exception with raw response to be handled at server level.
         """
         # Try to extract JSON from response
         json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', response)
@@ -226,20 +226,10 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            # FALLBACK: Return original results as-is
-            print(f"[Judge] Warning: Failed to parse JSON, using original order: {e}", flush=True)
-            return [
-                RerankResult(
-                    file_path=r.file_path,
-                    code_chunk=r.code_chunk,
-                    start_line=r.start_line,
-                    end_line=r.end_line,
-                    score=r.score,
-                    relevancia=r.score,  # Use original score as relevancia
-                    razon="[Warning: LLM response parsing failed, using original semantic search score]"
-                )
-                for r in original_results
-            ]
+            # Store raw response in self for server access
+            self._last_raw_response = response
+            # RAISE exception with raw response so server can handle as text
+            raise Exception(f"No se pudo parsear la respuesta del Judge: {e}. Raw response: {response}")
 
         if "reranked" not in data or not isinstance(data["reranked"], list):
             # FALLBACK: Return original results as-is
@@ -288,20 +278,32 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
     
     async def rerank(self, query: str, results: list[SearchResult]) -> list[RerankResult]:
         """Rerank search results using LLM.
-        
+
         Args:
             query: User query
             results: Original search results
-            
+
         Returns:
             Reranked results with relevance scores
         """
         if not results:
             return []
-        
-        user_prompt = self._create_user_prompt(query, results, include_summary=False)
-        response = await self._call_llm(user_prompt, include_summary=False)
-        return self._process_response(response, results)
+
+        try:
+            user_prompt = self._create_user_prompt(query, results, include_summary=False)
+            response = await self._call_llm(user_prompt, include_summary=False)
+            return self._process_response(response, results)
+        except Exception as e:
+            # Store the response for server-level handling, then re-raise
+            if hasattr(self, '_last_response'):
+                delattr(self, '_last_response')
+
+            # Try to extract response from error if it contains "Raw response:"
+            if "Raw response:" in str(e):
+                self._last_response = str(e).split("Raw response: ", 1)[1]
+
+            # Re-raise so server can handle it
+            raise e
     
     async def summarize(self, query: str, results: list[SearchResult]) -> str:
         """Generate summary of search results.

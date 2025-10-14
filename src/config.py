@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     mcp_codebase_reranking_summarize: bool = False
 
     # Search configuration
-    mcp_codebase_search_min_score: float = Field(default=0.4, ge=0.0, le=1.0)
+    mcp_codebase_search_min_score: float = Field(default=0.1, ge=0.0, le=1.0)
     mcp_codebase_search_max_results: int = Field(default=20, ge=1, le=100)
 
     # Properties for easier access
