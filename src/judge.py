@@ -106,51 +106,158 @@ REGLAS OBLIGATORIAS DE RELEVANCIA (NO NEGOCIABLES):
       - Solo incluir si coincide con el código y aporta valor
       - Si contradice el código → OMITIR completamente
 
-3. ORDEN OBLIGATORIO:
-      - Todos los archivos de código relevantes (0.81-1.0)
+3. MÚLTIPLES FRAGMENTOS DEL MISMO ARCHIVO:
+      - Evalúa CADA FRAGMENTO INDIVIDUALMENTE
+      - Identifica cada fragmento por filePath + startLine + endLine
+      - Un fragmento puede ser muy relevante (0.95) y otro del mismo archivo poco relevante (0.5)
+      - Ejemplo: Si buscan "autenticación de usuarios", el fragmento con login() puede ser 0.95, pero el fragmento con logout() solo 0.6
+      - IMPORTANTE: En tu razón, sugiere al usuario ver líneas adicionales para contexto completo
+        * Ejemplo: "Ver líneas 40-83 para contexto completo de la función"
+        * Esto ayuda al usuario a entender mejor el código sin tener que expandir manualmente
+
+4. USAGES (IMPORTANTE):
+      - Si detectas fragmentos que son USAGES (usan la función/clase pero no la definen):
+        * NO los incluyas en la lista principal de fragmentos reordenados
+        * Agrégalos en una sección separada "USAGES:" al final
+        * Formato: Lista breve de ubicaciones (filePath:lineNumber)
+        * Ejemplo: "src/server.ts:539", "src/app.js:220"
+      - Solo incluir si hay 3+ usages detectados
+      - Máximo 10 usages en la lista
+      - Los usages NO deben tener relevancia ni razón, solo ubicación
+
+5. ORDEN OBLIGATORIO:
+      - Todos los fragmentos de código relevantes (0.81-1.0)
       - Luego archivos de configuración (0.5-0.8)
       - Luego documentación validada (máximo 0.8)
       - Finalmente otros archivos (0.1-0.5)
 
-IMPORTANTE: Nunca un archivo de texto o documentación debe ir al inicio, asegurate de respetar el orden de calificaciones."""
-        
+IMPORTANTE:
+- Nunca un archivo de texto o documentación debe ir al inicio
+- Identifica SIEMPRE cada fragmento por su ubicación exacta (startLine-endLine)
+- Dos fragmentos del mismo archivo pueden tener relevancia MUY diferente
+- NO RECORTES EL CÓDIGO: Usa el fragmento completo tal como lo recibes, no lo resumas ni acortes
+- El código relevante debe mostrarse COMPLETO, no solo 1-2 líneas"""
+
         summary_instruction = ""
         if include_summary:
             summary_instruction = """
 
-CRÍTICO: Debes incluir un campo "summary" A NIVEL RAÍZ del JSON (no dentro de cada elemento del array).
-El "summary" debe ser un resumen consolidado global que explique cómo los fragmentos más relevantes
-responden a la consulta del usuario. NO incluyas "summary" dentro de cada objeto del array "reranked"."""
-        
-        json_structure = ""
+CRÍTICO: Al final de tu respuesta, después de todos los fragmentos reordenados,
+debes incluir las siguientes secciones opcionales (solo si aplican):
+
+6. FLUJO END-TO-END (CUANDO APLIQUE):
+   - Si detectas múltiples fragmentos que forman un flujo secuencial:
+     * Agrega sección "FLUJO END-TO-END:" después de USAGES
+     * Describe el flujo en 3-5 pasos numerados
+     * Usa flechas → para mostrar secuencia
+     * Ejemplo: "1. Usuario envía mensaje → 2. Se guarda sin embedding → 3. MessageIndexerService lo detecta → 4. Genera embedding en batch → 5. Almacena en SQLite"
+   - Solo incluir si hay 3+ fragmentos relacionados secuencialmente
+
+7. ARCHIVOS RELACIONADOS (CUANDO APLIQUE):
+   - Si detectas fragmentos de múltiples archivos relacionados:
+     * Agrega sección "ARCHIVOS RELACIONADOS:" después de FLUJO
+     * Lista archivos con breve descripción de su rol
+     * Formato: "• filePath - Descripción del rol"
+     * Solo incluir archivos con relevancia > 0.7
+     * Máximo 5 archivos
+
+8. CONCEPTOS CLAVE (CUANDO APLIQUE):
+   - Identifica conceptos técnicos importantes mencionados en los fragmentos
+   * Agrega sección "CONCEPTOS CLAVE:" después de ARCHIVOS RELACIONADOS
+   * Lista 3-5 conceptos con breve explicación
+   * Formato: "• Concepto: Explicación breve"
+   * Ejemplo: "• Batch Processing: Procesar múltiples items en una sola llamada API (20x más eficiente)"
+
+9. MÉTRICAS DE COBERTURA (CUANDO APLIQUE):
+   - Agrega sección "MÉTRICAS:" al final
+   - Incluye:
+     * Total de fragmentos evaluados
+     * Fragmentos relevantes (relevancia > 0.8)
+     * Número de archivos únicos
+     * Si hay más resultados relevantes no mostrados
+   - Formato: "📊 X de Y fragmentos relevantes (Z%)" en líneas separadas
+
+RESUMEN GLOBAL:
+[Resumen consolidado de 2-3 párrafos explicando cómo los fragmentos más relevantes responden a la consulta]"""
+
+        text_structure = ""
         if include_summary:
-            json_structure = """{
-    "reranked": [
-      {
-        "filePath": "ruta/al/archivo.js",
-        "relevancia": 0.95,
-        "razon": "Este archivo contiene la implementación principal de la funcionalidad buscada"
-      }
-    ],
-    "summary": "Resumen global consolidado de cómo los fragmentos más relevantes responden a la consulta del usuario"
-}"""
+            text_structure = """
+FORMATO DE RESPUESTA (TEXTO PLANO):
+
+1. filePath: src/auth/login.py
+   startLine: 45
+   endLine: 78
+   relevancia: 0.95
+   razon: Este fragmento (líneas 45-78) contiene la función principal de autenticación que valida credenciales y genera tokens. 💡 Ver líneas 40-83 para contexto completo de la función.
+
+2. filePath: src/utils/validators.py
+   startLine: 120
+   endLine: 145
+   relevancia: 0.88
+   razon: Implementación auxiliar de validación de contraseñas utilizada por el sistema de autenticación. 💡 Ver líneas 115-150 para ver toda la clase de validación.
+
+USAGES:
+src/server.ts:539
+src/app.js:220
+src/routes/api.js:155
+
+FLUJO END-TO-END:
+1. Usuario envía credenciales → 2. login.py valida con validators.py → 3. Genera token JWT → 4. Almacena sesión en Redis → 5. Retorna token al cliente
+
+ARCHIVOS RELACIONADOS:
+• src/auth/login.py - Función principal de autenticación
+• src/utils/validators.py - Validación de contraseñas y reglas
+• src/middleware/auth.py - Middleware de verificación de tokens
+• src/models/user.py - Modelo de usuario y permisos
+
+CONCEPTOS CLAVE:
+• JWT (JSON Web Token): Token firmado para autenticación stateless
+• Password Hashing: Bcrypt con salt para almacenar contraseñas de forma segura
+• Session Management: Redis para almacenar sesiones activas con TTL
+• Role-Based Access Control: Permisos basados en roles de usuario
+
+MÉTRICAS:
+📊 8 de 15 fragmentos relevantes (53%)
+📁 4 archivos únicos
+⚠️  Hay más resultados relevantes no mostrados
+
+RESUMEN GLOBAL:
+[Aquí va el resumen consolidado de 2-3 párrafos explicando cómo los fragmentos más relevantes responden a la consulta]
+"""
         else:
-            json_structure = """{
-    "reranked": [
-      {
-        "filePath": "ruta/al/archivo.js",
-        "relevancia": 0.95,
-        "razon": "Este archivo contiene la implementación principal de la funcionalidad buscada"
-      }
-    ]
-}"""
-        
+            text_structure = """
+FORMATO DE RESPUESTA (TEXTO PLANO):
+
+1. filePath: src/api/routes.py
+   startLine: 180
+   endLine: 215
+   relevancia: 0.93
+   razon: Este fragmento (líneas 180-215) contiene el endpoint principal que procesa las peticiones HTTP. 💡 Ver líneas 175-220 para contexto completo del router.
+
+2. filePath: src/middleware/auth.py
+   startLine: 55
+   endLine: 88
+   relevancia: 0.87
+   razon: Middleware de autenticación que valida tokens JWT antes de procesar las peticiones. 💡 Ver líneas 50-95 para ver toda la clase de middleware.
+
+USAGES:
+src/server.ts:539
+src/server.ts:540
+src/app.js:220
+"""
+
         return f"""{base_prompt}{summary_instruction}
 
-Debes devolver un JSON válido con la siguiente estructura exacta:
-{json_structure}
+Debes devolver TEXTO PLANO con la siguiente estructura exacta:
+{text_structure}
 
-RESPONDE ÚNICAMENTE CON EL JSON, sin texto adicional."""
+IMPORTANTE:
+- Usa EXACTAMENTE el formato mostrado arriba
+- Cada fragmento debe tener: filePath, startLine, endLine, relevancia, razon
+- La numeración debe ser consecutiva (1., 2., 3., etc.)
+- NO uses JSON, solo texto plano estructurado
+- SIEMPRE incluye startLine y endLine para identificar fragmentos específicos"""
     
     def _create_user_prompt(self, query: str, results: list[SearchResult], include_summary: bool) -> str:
         """Create user prompt with query and results."""
@@ -161,14 +268,21 @@ RESPONDE ÚNICAMENTE CON EL JSON, sin texto adicional."""
                 f"Score original: {result.score:.4f}\n"
                 f"Código:\n{result.code_chunk.strip()}\n"
             )
-        
+
         fragments_text = "\n".join(fragments)
         return f"""Consulta del usuario: "{query}"
 
 Fragmentos encontrados:
 {fragments_text}
 
-Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
+INSTRUCCIONES:
+1. Evalúa CADA FRAGMENTO INDIVIDUALMENTE según su relevancia para la consulta
+2. Identifica cada fragmento por su archivo Y líneas exactas (startLine-endLine) pero añade su contexto adicional (contenido antes y después para mejor cobertura)
+3. Dos fragmentos del mismo archivo pueden tener relevancia MUY diferente
+4. Ejemplo: Si la consulta busca "validación de datos", el fragmento con validate_input() es más relevante que el fragmento con sanitize_output()
+5. Reordena los fragmentos de mayor a menor relevancia
+6. Incluye SIEMPRE startLine y endLine en tu respuesta
+7. No incluyas codigo repetido. """
     
     async def _call_llm(self, user_prompt: str, include_summary: bool) -> str:
         """Call LLM API and return response text."""
@@ -211,72 +325,160 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
             
             return content.strip()
     
-    def _process_response(self, response: str, original_results: list[SearchResult]) -> list[RerankResult]:
-        """Process LLM response and create reranked results.
+    def _process_response(self, response: str, original_results: list[SearchResult]) -> tuple[list[RerankResult], list[str]]:
+        """Process LLM response and create reranked results + usages list.
 
-        If JSON parsing fails, raises exception with raw response to be handled at server level.
+        Parses plain text response instead of JSON for better reliability.
+
+        Returns:
+            Tuple of (reranked_results, usages_list)
         """
-        # Try to extract JSON from response
-        json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', response)
-        if json_match:
-            json_str = json_match.group(1)
-        else:
-            json_str = response
+        # Create lookup for original results using filePath + lines as key
+        results_map = {}
+        for r in original_results:
+            key = f"{r.file_path}:{r.start_line}-{r.end_line}"
+            results_map[key] = r
 
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            # Store raw response in self for server access
-            self._last_raw_response = response
-            # RAISE exception with raw response so server can handle as text
-            raise Exception(f"No se pudo parsear la respuesta del Judge: {e}. Raw response: {response}")
+        # Also create fallback map by filePath only (for backward compatibility)
+        fallback_map = {}
+        for r in original_results:
+            if r.file_path not in fallback_map:
+                fallback_map[r.file_path] = r
 
-        if "reranked" not in data or not isinstance(data["reranked"], list):
-            # FALLBACK: Return original results as-is
-            print(f"[Judge] Warning: Invalid response structure, using original order", flush=True)
-            return [
-                RerankResult(
-                    file_path=r.file_path,
-                    code_chunk=r.code_chunk,
-                    start_line=r.start_line,
-                    end_line=r.end_line,
-                    score=r.score,
-                    relevancia=r.score,
-                    razon="[Warning: LLM response invalid, using original semantic search score]"
-                )
-                for r in original_results
-            ]
-
-        # Create lookup for original results
-        results_map = {r.file_path: r for r in original_results}
-
-        # Build reranked results
+        # Parse plain text response
         reranked = []
-        for item in data["reranked"]:
-            file_path = item.get("filePath")
-            relevancia = item.get("relevancia", 0.0)
-            razon = item.get("razon")
+        usages = []
+        lines = response.strip().split('\n')
 
-            if not file_path:
+        current_item = {}
+        in_usages_section = False
+
+        for line in lines:
+            line = line.strip()
+
+            # Check if we're entering USAGES section
+            if line.startswith('USAGES:'):
+                # Save any pending item
+                if current_item.get('filePath'):
+                    reranked.append(self._create_rerank_result(current_item, results_map, fallback_map))
+                    current_item = {}
+                in_usages_section = True
                 continue
 
-            original = results_map.get(file_path)
-            if not original:
+            # Check if we're entering any of the summary sections (stop parsing reranked items)
+            if line.startswith(('FLUJO END-TO-END:', 'ARCHIVOS RELACIONADOS:', 'CONCEPTOS CLAVE:', 'MÉTRICAS:', 'RESUMEN GLOBAL:')):
+                # Save any pending item
+                if current_item.get('filePath'):
+                    reranked.append(self._create_rerank_result(current_item, results_map, fallback_map))
+                    current_item = {}
+                # Stop processing reranked items (summary sections are handled separately)
+                break
+
+            # Skip empty lines
+            if not line:
+                # If we have a complete item, process it
+                if current_item.get('filePath') and not in_usages_section:
+                    reranked.append(self._create_rerank_result(current_item, results_map, fallback_map))
+                    current_item = {}
                 continue
 
-            reranked.append(RerankResult(
-                file_path=original.file_path,
-                code_chunk=original.code_chunk,
-                start_line=original.start_line,
-                end_line=original.end_line,
-                score=original.score,
-                relevancia=relevancia,
-                razon=razon
-            ))
+            # If we're in usages section, parse usage lines
+            if in_usages_section:
+                # Usage format: "src/server.ts:539" or just a file:line reference
+                if ':' in line and not line.startswith('filePath:'):
+                    usages.append(line)
+                continue
 
-        return reranked
+            # Check if this is a new numbered item (e.g., "1.", "2.", etc.)
+            if re.match(r'^\d+\.\s*filePath:', line):
+                # Save previous item if exists
+                if current_item.get('filePath'):
+                    reranked.append(self._create_rerank_result(current_item, results_map, fallback_map))
+                    current_item = {}
+
+                # Extract filePath from this line
+                match = re.search(r'filePath:\s*(.+)', line)
+                if match:
+                    current_item['filePath'] = match.group(1).strip()
+
+            # Parse field lines
+            elif line.startswith('filePath:'):
+                # Save previous item if exists
+                if current_item.get('filePath'):
+                    reranked.append(self._create_rerank_result(current_item, results_map, fallback_map))
+                    current_item = {}
+                current_item['filePath'] = line.split(':', 1)[1].strip()
+
+            elif line.startswith('startLine:'):
+                try:
+                    current_item['startLine'] = int(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+
+            elif line.startswith('endLine:'):
+                try:
+                    current_item['endLine'] = int(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+
+            elif line.startswith('relevancia:'):
+                try:
+                    current_item['relevancia'] = float(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+
+            elif line.startswith('razon:'):
+                current_item['razon'] = line.split(':', 1)[1].strip()
+
+        # Don't forget the last item
+        if current_item.get('filePath'):
+            reranked.append(self._create_rerank_result(current_item, results_map, fallback_map))
+
+        # If parsing failed completely, raise exception to trigger fallback
+        if not reranked:
+            print(f"[Judge] Warning: Could not parse response, will use raw LLM response", flush=True)
+            raise ValueError(f"Failed to parse LLM response. Raw response will be returned.")
+
+        return reranked, usages
+
+    def _create_rerank_result(self, item: dict, results_map: dict, fallback_map: dict) -> Optional[RerankResult]:
+        """Create a RerankResult from parsed item data."""
+        file_path = item.get('filePath')
+        start_line = item.get('startLine')
+        end_line = item.get('endLine')
+        relevancia = item.get('relevancia', 0.0)
+        razon = item.get('razon')
+
+        if not file_path:
+            return None
+
+        # Try to find by exact match (filePath + lines)
+        original = None
+        if start_line is not None and end_line is not None:
+            key = f"{file_path}:{start_line}-{end_line}"
+            original = results_map.get(key)
+
+        # Fallback to filePath only if exact match not found
+        if not original:
+            original = fallback_map.get(file_path)
+            if original:
+                print(f"[Judge] Warning: Using fallback match for {file_path} (no line numbers provided)", flush=True)
+
+        if not original:
+            print(f"[Judge] Warning: Could not find original result for {file_path}:{start_line}-{end_line}", flush=True)
+            return None
+
+        return RerankResult(
+            file_path=original.file_path,
+            code_chunk=original.code_chunk,
+            start_line=original.start_line,
+            end_line=original.end_line,
+            score=original.score,
+            relevancia=relevancia,
+            razon=razon
+        )
     
-    async def rerank(self, query: str, results: list[SearchResult]) -> list[RerankResult]:
+    async def rerank(self, query: str, results: list[SearchResult]) -> tuple[list[RerankResult], list[str]]:
         """Rerank search results using LLM.
 
         Args:
@@ -284,50 +486,48 @@ Evalúa y reordena estos fragmentos según su relevancia para la consulta."""
             results: Original search results
 
         Returns:
-            Reranked results with relevance scores
+            Tuple of (reranked_results, usages_list)
+
+        Raises:
+            ValueError: If parsing fails, includes raw LLM response in exception message
         """
         if not results:
-            return []
+            return [], []
+
+        user_prompt = self._create_user_prompt(query, results, include_summary=False)
+        response = await self._call_llm(user_prompt, include_summary=False)
 
         try:
-            user_prompt = self._create_user_prompt(query, results, include_summary=False)
-            response = await self._call_llm(user_prompt, include_summary=False)
             return self._process_response(response, results)
-        except Exception as e:
-            # Store the response for server-level handling, then re-raise
-            if hasattr(self, '_last_response'):
-                delattr(self, '_last_response')
-
-            # Try to extract response from error if it contains "Raw response:"
-            if "Raw response:" in str(e):
-                self._last_response = str(e).split("Raw response: ", 1)[1]
-
-            # Re-raise so server can handle it
-            raise e
+        except ValueError as e:
+            # Store raw response for fallback handling
+            self._last_raw_response = response
+            # Re-raise with raw response included
+            raise ValueError(f"Failed to parse LLM response. Raw response: {response}") from e
     
     async def summarize(self, query: str, results: list[SearchResult]) -> str:
-        """Generate summary of search results.
-        
+        """Generate enriched summary with flow, related files, concepts, and metrics.
+
         Args:
             query: User query
             results: Search results to summarize
-            
+
         Returns:
-            Summary text
+            Enriched summary text with optional sections
         """
         if not results:
             return "No hay resultados para resumir."
-        
-        # Use top 5 results for summary
-        top_results = results[:5]
-        
-        summary_prompt = f"""Analiza los siguientes fragmentos de código y genera un resumen conciso explicando cómo responden a la consulta: "{query}"
+
+        # Use top 10 results for enriched summary
+        top_results = results[:10]
+
+        summary_prompt = f"""Analiza los siguientes fragmentos de código y genera un resumen enriquecido explicando cómo responden a la consulta: "{query}"
 
 VALIDACIÓN INTELIGENTE: Estos fragmentos ya han sido validados y filtrados. Solo incluye información que sea relevante y precisa.
 
 Fragmentos encontrados:
 """
-        
+
         for i, r in enumerate(top_results, 1):
             is_markdown = r.file_path.endswith('.md') or r.file_path.endswith('.txt')
             prefix = '📄 [DOCUMENTACIÓN VALIDADA]' if is_markdown else '💻 [CÓDIGO]'
@@ -336,15 +536,37 @@ Fragmentos encontrados:
 {r.code_chunk.strip()}
 
 """
-        
-        summary_prompt += """
-Genera un resumen de 2-3 párrafos explicando cómo estos fragmentos responden a la consulta del usuario:
-- ENFÓCATE en las implementaciones reales encontradas en el código
-- Si hay documentación incluida, es porque ya fue validada contra el código y es relevante
-- Sé específico sobre qué funcionalidades y patrones encontraste
 
-IMPORTANTE: Responde SOLO con el texto del resumen, SIN formato JSON, SIN código, SIN marcadores.
-Solo texto natural en párrafos."""
+        summary_prompt += f"""
+Genera un resumen enriquecido con las siguientes secciones (SOLO incluye las que apliquen):
+
+FLUJO END-TO-END: (Solo si hay 3+ fragmentos que forman un flujo secuencial)
+Describe el flujo en 3-5 pasos numerados con flechas →
+Ejemplo: "1. Usuario envía mensaje → 2. Se guarda sin embedding → 3. MessageIndexerService lo detecta → 4. Genera embedding en batch → 5. Almacena en SQLite"
+
+ARCHIVOS RELACIONADOS: (Solo si hay múltiples archivos relacionados con relevancia > 0.7)
+Lista archivos con breve descripción de su rol
+Formato: "• filePath - Descripción del rol"
+Máximo 5 archivos
+
+CONCEPTOS CLAVE: (Solo si hay conceptos técnicos importantes)
+Lista 3-5 conceptos con breve explicación
+Formato: "• Concepto: Explicación breve"
+Ejemplo: "• Batch Processing: Procesar múltiples items en una sola llamada API (20x más eficiente)"
+
+MÉTRICAS:
+📊 {len([r for r in results if r.score > 0.8])} de {len(results)} fragmentos relevantes ({int(len([r for r in results if r.score > 0.8])/len(results)*100)}%)
+📁 {len(set(r.file_path for r in results))} archivos únicos
+{"⚠️  Hay más resultados relevantes no mostrados" if len(results) >= 20 else "✅ Todos los resultados relevantes mostrados"}
+
+RESUMEN GLOBAL:
+Genera 2-3 párrafos explicando cómo estos fragmentos responden a la consulta:
+- ENFÓCATE en las implementaciones reales encontradas en el código
+- Sé específico sobre qué funcionalidades y patrones encontraste
+- Menciona las líneas específicas cuando sea relevante
+
+IMPORTANTE: Responde con las secciones en TEXTO PLANO, sin JSON, sin código, sin marcadores markdown.
+Solo incluye las secciones que realmente apliquen (no inventes información)."""
 
         response = await self._call_llm(summary_prompt, include_summary=False)
 

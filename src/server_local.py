@@ -10,6 +10,11 @@ Use this when:
 
 For default mode (auto hash calculation), use server.py instead.
 """
+
+# MODE Configuration
+# "normal" = Use regular Judge with JSON parsing (current behavior)
+# "text" = Use TextDirectJudge with structured text (experimental, more reliable)
+MODE = "text"
 import sys
 from typing import Optional, Literal
 from fastmcp import FastMCP, Context
@@ -19,11 +24,13 @@ try:
     from .config import settings
     from .embedder import Embedder
     from .judge import Judge, SearchResult as JudgeSearchResult
+    from .text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
     from .qdrant_store import QdrantStore, SearchResult
 except ImportError:
     from config import settings
     from embedder import Embedder
     from judge import Judge, SearchResult as JudgeSearchResult
+    from text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
     from qdrant_store import QdrantStore, SearchResult
 
 
@@ -51,6 +58,16 @@ judge = Judge(
     system_prompt=settings.judge_system_prompt
 )
 
+# Experimental Text Direct Judge for explore_other_workspace
+text_judge = TextDirectJudge(
+    provider=settings.judge_provider,
+    api_key=settings.judge_api_key,
+    model_id=settings.judge_model_id,
+    max_tokens=settings.judge_max_tokens,
+    temperature=settings.judge_temperature,
+    base_url=settings.judge_base_url
+)
+
 qdrant_store = QdrantStore(
     url=settings.qdrant_url,
     api_key=settings.qdrant_api_key
@@ -75,7 +92,7 @@ def _format_search_results(query: str, qdrant_collection: str, results: list[Sea
     return '\n'.join(formatted_parts)
 
 
-def _format_rerank_results(query: str, qdrant_collection: str, reranked: list, summary: Optional[str] = None) -> str:
+def _format_rerank_results(query: str, qdrant_collection: str, reranked: list, summary: Optional[str] = None, usages: Optional[list[str]] = None) -> str:
     """Format reranked results as text."""
     if not reranked:
         return f'No se encontraron resultados relevantes para "{query}" en la colección "{qdrant_collection}".'
@@ -94,13 +111,227 @@ def _format_rerank_results(query: str, qdrant_collection: str, reranked: list, s
         formatted_parts.append(f'Relevancia: {result.relevancia:.4f}')
         formatted_parts.append(f'Score original: {result.score:.4f}')
         formatted_parts.append(f'Líneas: {result.start_line}-{result.end_line}')
+
+        # Extract relevant code snippet (first 2-3 meaningful lines)
+        code_lines = result.code_chunk.strip().split('\n')
+        snippet_lines = []
+        for line in code_lines:
+            clean_line = line.strip()
+            if clean_line and not clean_line.startswith('//') and not clean_line.startswith('#') and len(clean_line) > 3:
+                snippet_lines.append(clean_line)
+                if len(snippet_lines) >= 2:  # Limit to 2 meaningful lines
+                    break
+
+        snippet = ' | '.join(snippet_lines) if snippet_lines else code_lines[0].strip() if code_lines else 'N/A'
+        formatted_parts.append(f'Snippet: {snippet[:150]}{"..." if len(snippet) > 150 else ""}')
+
         if result.razon:
             formatted_parts.append(f'Razón: {result.razon}')
         formatted_parts.append('---')
         formatted_parts.append(result.code_chunk.strip())
         formatted_parts.append('')
 
+    # Add usages section if present
+    if usages and len(usages) > 0:
+        formatted_parts.append('=== USAGES DETECTADOS ===')
+        for usage in usages:
+            formatted_parts.append(f'• {usage}')
+        formatted_parts.append('')
+
     return '\n'.join(formatted_parts)
+
+
+def _format_search_results_explore(query: str, target_identifier: str, results: list[SearchResult]) -> str:
+    """Format search results for explore_other_workspace tool."""
+    if not results:
+        return f'No se encontraron coincidencias para "{query}" en {target_identifier}.'
+
+    formatted_parts = [f'Query: {query}', f'Target: {target_identifier}', '']
+
+    for result in results:
+        formatted_parts.append(f'Ruta: {result.file_path}')
+        formatted_parts.append(f'Score: {result.score:.4f}')
+        formatted_parts.append(f'Líneas: {result.start_line}-{result.end_line}')
+        formatted_parts.append('---')
+        formatted_parts.append(result.code_chunk.strip())
+        formatted_parts.append('')
+
+    return '\n'.join(formatted_parts)
+
+
+def _format_rerank_results_explore(query: str, target_identifier: str, reranked: list, summary: Optional[str] = None, usages: Optional[list[str]] = None) -> str:
+    """Format reranked results for explore_other_workspace tool."""
+    if not reranked:
+        return f'No se encontraron resultados relevantes para "{query}" en {target_identifier}.'
+
+    formatted_parts = [f'Query: {query}', f'Target: {target_identifier}', '']
+
+    if summary:
+        formatted_parts.append('=== RESUMEN ===')
+        formatted_parts.append(summary)
+        formatted_parts.append('')
+        formatted_parts.append('=== RESULTADOS REORDENADOS ===')
+        formatted_parts.append('')
+
+    for result in reranked:
+        formatted_parts.append(f'Ruta: {result.file_path}')
+        formatted_parts.append(f'Relevancia: {result.relevancia:.4f}')
+        formatted_parts.append(f'Score original: {result.score:.4f}')
+        formatted_parts.append(f'Líneas: {result.start_line}-{result.end_line}')
+
+        # Extract relevant code snippet (first 2-3 meaningful lines)
+        code_lines = result.code_chunk.strip().split('\n')
+        snippet_lines = []
+        for line in code_lines:
+            clean_line = line.strip()
+            if clean_line and not clean_line.startswith('//') and not clean_line.startswith('#') and len(clean_line) > 3:
+                snippet_lines.append(clean_line)
+                if len(snippet_lines) >= 2:  # Limit to 2 meaningful lines
+                    break
+
+        snippet = ' | '.join(snippet_lines) if snippet_lines else code_lines[0].strip() if code_lines else 'N/A'
+        formatted_parts.append(f'Snippet: {snippet[:150]}{"..." if len(snippet) > 150 else ""}')
+
+        if result.razon:
+            formatted_parts.append(f'Razón: {result.razon}')
+        formatted_parts.append('---')
+        formatted_parts.append(result.code_chunk.strip())
+        formatted_parts.append('')
+
+    # Add usages section if present
+    if usages and len(usages) > 0:
+        formatted_parts.append('=== USAGES DETECTADOS ===')
+        for usage in usages:
+            formatted_parts.append(f'• {usage}')
+        formatted_parts.append('')
+
+    return '\n'.join(formatted_parts)
+
+
+@mcp.tool
+async def explore_other_workspace(
+    query: str,
+    qdrant_collection: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+    path: Optional[str] = None,
+    mode: Literal["rerank", "summary"] = "rerank",
+    ctx: Context = None
+) -> str:
+    """Explora y busca en colecciones de otros workspaces diferentes al actual.
+
+    Esta herramienta permite realizar búsquedas semánticas en workspaces remotos o diferentes
+    al actual, útil para buscar patrones en proyectos relacionados o diferentes codebases.
+
+    EXPERIMENTAL: Usa formato de texto directo (no JSON) para eliminar problemas de parsing.
+    Siempre realiza rerank por defecto para mejores resultados.
+
+    Args:
+        query: Texto natural a buscar en el código
+        qdrant_collection: Nombre de colección Qdrant explícito (prioridad alta)
+        workspace_path: Ruta del workspace alternativo (usado si no hay qdrant_collection)
+        path: Prefijo de ruta opcional para filtrar resultados
+        mode: Modo de operación - "rerank" solo reordena, "summary" incluye resumen
+        ctx: FastMCP context for logging
+
+    Returns:
+        Resultados de búsqueda reordenados formateados como texto, opcionalmente con resumen
+    """
+    try:
+        # Log request
+        if ctx:
+            await ctx.info(f"[Explore Other LOCAL] Query: {query}, Collection: {qdrant_collection}, Workspace: {workspace_path}, Mode: {mode}")
+        else:
+            print(f"[Explore Other LOCAL] Query: {query}, Collection: {qdrant_collection}, Workspace: {workspace_path}, Mode: {mode}", file=sys.stderr)
+
+        # Validate inputs
+        if not query or not query.strip():
+            raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
+
+        # Determine collection to use
+        final_collection_name = None
+        target_identifier = None
+
+        if qdrant_collection and qdrant_collection.strip():
+            # Priority 1: Use explicit collection name
+            final_collection_name = qdrant_collection.strip()
+            target_identifier = f"colección '{final_collection_name}'"
+        elif workspace_path and workspace_path.strip():
+            # Priority 2: Calculate from workspace path
+            normalized_workspace = qdrant_store._normalize_workspace_path(workspace_path.strip())
+            final_collection_name = qdrant_store._get_collection_name(normalized_workspace)
+            target_identifier = f"workspace '{workspace_path}' (colección: {final_collection_name})"
+        else:
+            raise ToolError(
+                "Debes proporcionar 'qdrant_collection' O 'workspace_path'.\n\n"
+                "- qdrant_collection: Nombre explícito de la colección (ej: 'codebase-f93e99958acc444e')\n"
+                "- workspace_path: Ruta del workspace (se calculará la colección automáticamente)\n\n"
+                "Si ambos están presentes, se usa qdrant_collection (prioridad alta)."
+            )
+
+        # Step 1: Perform initial search
+        if ctx:
+            await ctx.info(f"[Explore Other LOCAL] Buscando en {target_identifier} para query: '{query}'")
+
+        vector = await embedder.create_embedding(query)
+        search_results = await qdrant_store.search(
+            vector=vector,
+            workspace_path="",  # Not used when collection_name is provided
+            directory_prefix=path,
+            min_score=settings.search_min_score,
+            max_results=settings.search_max_results,
+            collection_name=final_collection_name
+        )
+
+        if not search_results:
+            return f'No se encontraron resultados para "{query}" en {target_identifier}.'
+
+        # Step 2: Convert to TextDirectJudge format
+        text_judge_results = [
+            TextJudgeSearchResult(
+                file_path=r.file_path,
+                code_chunk=r.code_chunk,
+                start_line=r.start_line,
+                end_line=r.end_line,
+                score=r.score
+            )
+            for r in search_results
+        ]
+
+        # Step 3: Rerank with Text Direct LLM (no JSON parsing)
+        if ctx:
+            await ctx.info(f"[Explore Other LOCAL] Reordenando {len(text_judge_results)} resultados con TextDirectJudge")
+
+        try:
+            if mode == "summary":
+                reranked, summary, usages = await text_judge.rerank_with_summary(query, text_judge_results)
+            else:
+                reranked, usages = await text_judge.rerank(query, text_judge_results)
+                summary = None
+        except Exception as e:
+            # FALLBACK: Si el TextDirectJudge falla, devolver resultados originales
+            if ctx:
+                await ctx.info(f"[Explore Other LOCAL] TextDirectJudge failed, fallback to original results: {str(e)}")
+            else:
+                print(f"[Explore Other LOCAL] TextDirectJudge failed, fallback to original results: {str(e)}", file=sys.stderr)
+            return _format_search_results_explore(query, target_identifier, search_results)
+
+        # Apply max results limit
+        reranked = reranked[:settings.reranking_max_results]
+
+        # Format and return results
+        return _format_rerank_results_explore(query, target_identifier, reranked, summary, usages)
+
+    except ToolError:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        if ctx:
+            await ctx.info(f"[Explore Other LOCAL] Fallback to search results due to: {error_msg}")
+        else:
+            print(f"[Explore Other LOCAL] Fallback to search results due to: {error_msg}", file=sys.stderr)
+
+        # Always return search results instead of error
+        return _format_search_results_explore(query, target_identifier or "workspace desconocido", search_results)
 
 
 @mcp.tool
@@ -162,36 +393,96 @@ async def superior_codebase_rerank(
         if not search_results:
             return f'No se encontraron resultados para "{query}" en la colección "{qdrant_collection}".'
 
-        # Step 2: Convert to Judge format
-        judge_results = [
-            JudgeSearchResult(
-                file_path=r.file_path,
-                code_chunk=r.code_chunk,
-                start_line=r.start_line,
-                end_line=r.end_line,
-                score=r.score
-            )
-            for r in search_results
-        ]
+        # Step 2: Choose judge based on MODE
+        if MODE == "text":
+            # Use TextDirectJudge (experimental, more reliable)
+            text_judge_results = [
+                TextJudgeSearchResult(
+                    file_path=r.file_path,
+                    code_chunk=r.code_chunk,
+                    start_line=r.start_line,
+                    end_line=r.end_line,
+                    score=r.score
+                )
+                for r in search_results
+            ]
 
-        # Step 3: Rerank with LLM
-        if ctx:
-            await ctx.info(f"[Rerank LOCAL] Reordenando {len(judge_results)} resultados con LLM")
+            # Step 3: Rerank with TextDirectJudge
+            if ctx:
+                await ctx.info(f"[Rerank LOCAL] Reordenando {len(text_judge_results)} resultados con TextDirectJudge (MODE={MODE})")
 
-        reranked = await judge.rerank(query, judge_results)
+            if mode == "summary":
+                reranked, summary, usages = await text_judge.rerank_with_summary(query, text_judge_results)
+            else:
+                reranked, usages = await text_judge.rerank(query, text_judge_results)
+                summary = None
+        else:
+            # Use regular Judge with JSON parsing (original behavior)
+            judge_results = [
+                JudgeSearchResult(
+                    file_path=r.file_path,
+                    code_chunk=r.code_chunk,
+                    start_line=r.start_line,
+                    end_line=r.end_line,
+                    score=r.score
+                )
+                for r in search_results
+            ]
+
+            # Step 3: Rerank with regular Judge
+            if ctx:
+                await ctx.info(f"[Rerank LOCAL] Reordenando {len(judge_results)} resultados con Judge (MODE={MODE})")
+
+            try:
+                reranked, usages = await judge.rerank(query, judge_results)
+            except Exception as e:
+                # FALLBACK LEVEL 1: Devolver respuesta cruda del LLM (sin parsing)
+                if ctx:
+                    await ctx.info(f"[Rerank LOCAL] Judge parsing failed, returning raw LLM response: {str(e)}")
+                else:
+                    print(f"[Rerank LOCAL] Judge parsing failed, returning raw LLM response: {str(e)}", file=sys.stderr)
+
+                # Try to extract raw response from error message or judge's last response
+                raw_response = None
+
+                # Method 1: Extract from error message
+                error_msg = str(e)
+                if "Raw response: " in error_msg:
+                    raw_response = error_msg.split("Raw response: ", 1)[1]
+
+                # Method 2: Check if judge stored the response
+                elif hasattr(judge, '_last_raw_response'):
+                    raw_response = judge._last_raw_response
+
+                if raw_response:
+                    # FALLBACK LEVEL 1: Return raw LLM response as-is
+                    return f"""Query: {query}
+Collection: {qdrant_collection}
+
+=== RESPUESTA CRUDA DEL LLM (Parsing falló) ===
+
+{raw_response.strip()}"""
+
+                # FALLBACK LEVEL 2: Si no hay respuesta cruda, devolver resultados raw de embeddings
+                if ctx:
+                    await ctx.info(f"[Rerank LOCAL] No raw LLM response available, returning raw embedding results")
+                else:
+                    print(f"[Rerank LOCAL] No raw LLM response available, returning raw embedding results", file=sys.stderr)
+
+                return _format_search_results(query, qdrant_collection, search_results)
+
+            # Step 4: Generate summary if requested
+            summary = None
+            if mode == "summary":
+                if ctx:
+                    await ctx.info("[Rerank LOCAL] Generando resumen")
+                summary = await judge.summarize(query, judge_results)
 
         # Apply max results limit
         reranked = reranked[:settings.reranking_max_results]
 
-        # Step 4: Generate summary if requested
-        summary = None
-        if mode == "summary":
-            if ctx:
-                await ctx.info("[Rerank LOCAL] Generando resumen")
-            summary = await judge.summarize(query, judge_results)
-
         # Format and return results
-        return _format_rerank_results(query, qdrant_collection, reranked, summary)
+        return _format_rerank_results(query, qdrant_collection, reranked, summary, usages)
 
     except ToolError:
         raise
