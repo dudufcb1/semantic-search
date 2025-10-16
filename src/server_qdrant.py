@@ -37,18 +37,23 @@ mcp = FastMCP(
     version="0.1.0"
 )
 
-# Initialize embedder service
-embedder = Embedder(
-    provider=settings.embedder_provider,
-    api_key=settings.embedder_api_key,
-    model_id=settings.embedder_model_id,
-    base_url=settings.embedder_base_url,
-    dimension=settings.embedder_dimension
-)
-
-# Initialize services for visit_other_project (lazy initialization to avoid errors if not configured)
+# Lazy initialization for all services to ensure env vars are loaded
+_embedder = None
 _qdrant_store = None
 _storage_resolver = None
+
+def get_embedder():
+    """Lazy initialization of Embedder."""
+    global _embedder
+    if _embedder is None:
+        _embedder = Embedder(
+            provider=settings.embedder_provider,
+            api_key=settings.embedder_api_key,
+            model_id=settings.embedder_model_id,
+            base_url=settings.embedder_base_url,
+            dimension=settings.embedder_dimension
+        )
+    return _embedder
 
 def get_qdrant_store():
     """Lazy initialization of QdrantStore."""
@@ -500,6 +505,7 @@ async def semantic_search(
         else:
             print(f"[Semantic Search] Creando embedding para query...", file=sys.stderr)
 
+        embedder = get_embedder()
         vector = await embedder.create_embedding(query)
 
         if ctx:
@@ -683,6 +689,7 @@ async def visit_other_project(
             raise ToolError(str(e))
 
         # Paso 2: Crear embedding y buscar
+        embedder = get_embedder()
         vector = await embedder.create_embedding(query)
 
         if resolution.storage_type == "sqlite":
