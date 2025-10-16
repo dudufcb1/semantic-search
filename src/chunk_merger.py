@@ -13,6 +13,66 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
 
+# Extensiones de archivos compilados/minificados que queremos evitar mostrar
+COMPILED_EXTENSIONS = {
+    '.min.js', '.min.css',  # Minificados
+    '.map',                  # Source maps
+    '.woff', '.woff2', '.ttf', '.eot',  # Fuentes
+    '.sum', '.mod',          # Go modules
+    '.svg',                  # SVG (a veces contienen mucho texto basura)
+}
+
+# Patrones en nombres de archivo que indican archivos compilados
+COMPILED_PATTERNS = {
+    'lock',  # package-lock.json, yarn.lock, composer.lock, etc.
+    '.bundle.',  # Archivos bundle
+    '.chunk.',   # Archivos chunk de webpack
+}
+
+
+def should_skip_file(file_path: str, content: str) -> bool:
+    """
+    Determina si un archivo debe ser omitido por ser compilado/minificado.
+
+    Usa una estrategia híbrida:
+    1. Extensiones conocidas de archivos compilados
+    2. Patrones en nombres de archivo (lock, bundle, chunk)
+    3. Ratio alto de números/puntos/guiones (>40%)
+    4. Palabras promedio muy cortas (<3 caracteres)
+
+    Args:
+        file_path: Ruta del archivo
+        content: Contenido del archivo o chunk
+
+    Returns:
+        True si el archivo debe ser omitido, False en caso contrario
+    """
+    file_path_lower = file_path.lower()
+
+    # 1. Extensión conocida
+    if any(file_path_lower.endswith(ext) for ext in COMPILED_EXTENSIONS):
+        return True
+
+    # 2. Patrones en nombre de archivo
+    if any(pattern in file_path_lower for pattern in COMPILED_PATTERNS):
+        return True
+
+    # 3. Ratio de números/puntos/guiones alto (indica código compilado/minificado)
+    if len(content) > 100:  # Solo aplicar si hay suficiente contenido
+        numbers_and_symbols = sum(1 for c in content if c.isdigit() or c in '.-')
+        ratio = numbers_and_symbols / len(content)
+        if ratio > 0.4:  # Más del 40% son números/símbolos
+            return True
+
+    # 4. Palabras promedio muy cortas (indica minificación)
+    words = content.split()
+    if len(words) > 10:  # Solo aplicar si hay suficientes palabras
+        avg_word_len = sum(len(w) for w in words) / len(words)
+        if avg_word_len < 3.0:  # Palabras promedio < 3 caracteres
+            return True
+
+    return False
+
 
 def merge_chunks(
     file_path: str,
@@ -296,6 +356,12 @@ def smart_merge_search_results(
     """
     workspace = Path(workspace_path)
 
+    # Paso 0: Filtrar archivos compilados/minificados ANTES de agrupar
+    filtered_results = []
+    for file_path, code_chunk, start_line, end_line, distance in search_results:
+        if not should_skip_file(file_path, code_chunk):
+            filtered_results.append((file_path, code_chunk, start_line, end_line, distance))
+
     # Paso 1: Agrupar por archivo
     file_data = defaultdict(lambda: {
         'chunks': [],
@@ -303,7 +369,7 @@ def smart_merge_search_results(
         'min_distance': float('inf')
     })
 
-    for file_path, code_chunk, start_line, end_line, distance in search_results:
+    for file_path, code_chunk, start_line, end_line, distance in filtered_results:
         file_data[file_path]['chunks'].append((code_chunk, start_line, end_line))
         file_data[file_path]['ranges'].append((start_line, end_line))
         file_data[file_path]['min_distance'] = min(
