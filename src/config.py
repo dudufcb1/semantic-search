@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     mcp_codebase_embedder_api_key: str
     mcp_codebase_embedder_base_url: Optional[str] = None
     mcp_codebase_embedder_model_id: str = "text-embedding-3-small"
+    mcp_codebase_embedder_dimension: Optional[int] = Field(
+        default=None,
+        description="Embedding dimension (1536, 3072, 4096, etc.). If None, uses model default."
+    )
 
     # Judge (LLM) configuration
     mcp_codebase_judge_provider: Literal["openai", "openai-compatible", "mcp-internal"] = "openai"
@@ -93,6 +97,10 @@ class Settings(BaseSettings):
     @property
     def embedder_model_id(self) -> str:
         return self.mcp_codebase_embedder_model_id
+
+    @property
+    def embedder_dimension(self) -> Optional[int]:
+        return self.mcp_codebase_embedder_dimension
 
     @property
     def judge_provider(self) -> str:

@@ -44,7 +44,8 @@ embedder = Embedder(
     provider=settings.embedder_provider,
     api_key=settings.embedder_api_key,
     model_id=settings.embedder_model_id,
-    base_url=settings.embedder_base_url
+    base_url=settings.embedder_base_url,
+    dimension=settings.embedder_dimension
 )
 
 # Initialize services for visit_other_project (lazy initialization to avoid errors if not configured)

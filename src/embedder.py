@@ -22,19 +22,23 @@ class Embedder:
         provider: str,
         api_key: str,
         model_id: str,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        dimension: Optional[int] = None
     ):
         """Initialize embedder client.
-        
+
         Args:
             provider: Provider type ("openai" or "openai-compatible")
             api_key: API key for authentication
             model_id: Model identifier
             base_url: Optional base URL for openai-compatible providers
+            dimension: Optional embedding dimension (1536, 3072, 4096, etc.)
+                      If None, uses model default
         """
         self.provider = provider
         self.model_id = model_id
-        
+        self.dimension = dimension
+
         # Determine endpoint
         if provider == "openai":
             self.endpoint = "https://api.openai.com/v1/embeddings"
@@ -42,7 +46,7 @@ class Embedder:
             if not base_url:
                 raise ValueError("base_url is required for openai-compatible provider")
             self.endpoint = f"{base_url.rstrip('/')}/embeddings"
-        
+
         # Setup headers
         self.headers = {
             "Content-Type": "application/json",
@@ -70,13 +74,17 @@ class Embedder:
         """
         # Apply query prefix
         processed_text = self._apply_query_prefix(text)
-        
+
         # Prepare payload
         payload = {
             "model": self.model_id,
             "input": [processed_text],
         }
-        
+
+        # Add dimension if specified
+        if self.dimension is not None:
+            payload["dimensions"] = self.dimension
+
         # Make request
         async with httpx.AsyncClient() as client:
             response = await client.post(
