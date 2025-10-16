@@ -1,0 +1,68 @@
+   1  <?php
+   2  
+   3  namespace App\Http\Controllers\Api;
+   4  
+   5  use App\Http\Controllers\Controller;
+   6  use App\Services\EmbeddingService;
+   7  use Illuminate\Http\JsonResponse;
+   8  use Illuminate\Http\Request;
+   9  use Throwable;
+  10  
+  11  class EmbeddingSQLiteController extends Controller
+  12  {
+  13      private EmbeddingService $embeddingService;
+  14  
+  15      public function __construct(EmbeddingService $embeddingService)
+  16      {
+  17          $this->embeddingService = $embeddingService;
+  18      }
+  19  
+  20      /**
+  21       * POST /api/embeddings/sqlite/index
+  22       */
+  23      public function index(Request $request): JsonResponse
+  24      {
+  25          $validated = $request->validate([
+  26              'message_id' => 'required|string',
+  27              'embedding' => 'required|array|size:1536',
+  28              'embedding.*' => 'required|numeric',
+  29              'payload' => 'required|array',
+  30              'payload.conversation_id' => 'required|string',
+  31              'payload.role' => 'required|string',
+  32              'payload.content' => 'required|string',
+  33              'payload.model' => 'nullable|string',
+  34              'payload.provider' => 'nullable|string',
+  35              'payload.timestamp' => 'nullable|string',
+  36          ]);
+
+... código omitido (líneas 37-56) ...
+
+  57      /**
+  58       * POST /api/embeddings/sqlite/search
+  59       */
+  60      public function search(Request $request): JsonResponse
+  61      {
+  62          $validated = $request->validate([
+  63              'embedding' => 'required|array|size:1536',
+  64              'embedding.*' => 'required|numeric',
+  65              'limit' => 'nullable|integer|min:1|max:50',
+  66          ]);
+  67  
+  68          try {
+  69              $results = $this->embeddingService->searchSimilar(
+  70                  $validated['embedding'],
+  71                  $validated['limit'] ?? 5
+  72              );
+  73  
+  74              return response()->json([
+  75                  'success' => true,
+  76                  'results' => $results,
+  77                  'count' => count($results),
+  78              ]);
+  79          } catch (Throwable $e) {
+  80              return response()->json([
+  81                  'success' => false,
+  82                  'error' => $e->getMessage(),
+  83              ], 500);
+  84          }
+  85      }
