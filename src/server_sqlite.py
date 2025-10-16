@@ -14,19 +14,19 @@ except ImportError:
     sqlite_vec = None
 
 try:
-    from .config import settings
-    from .embedder import Embedder
-    from .chunk_merger import smart_merge_search_results
-    from .storage_resolver import StorageResolver
-    from .text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
-    from .qdrant_store import QdrantStore
-except ImportError:
     from config import settings
     from embedder import Embedder
     from chunk_merger import smart_merge_search_results
     from storage_resolver import StorageResolver
     from text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
     from qdrant_store import QdrantStore
+except ImportError:
+    from .config import settings
+    from .embedder import Embedder
+    from .chunk_merger import smart_merge_search_results
+    from .storage_resolver import StorageResolver
+    from .text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
+    from .qdrant_store import QdrantStore
 
 
 @dataclass
