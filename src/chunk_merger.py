@@ -152,13 +152,15 @@ def merge_chunks(
     for start, end in sorted_ranges:
         # Ajustar end si excede el total de líneas
         end = min(end, total_lines)
-        
+
         # Mostrar indicador de código omitido si hay gap
         if show_omitted and last_end > 0 and start > last_end + 1:
             omitted_start = last_end + 1
             omitted_end = start - 1
-            result.append(f"\n... código omitido (líneas {omitted_start}-{omitted_end}) ...\n")
-        
+            result.append("")  # Línea en blanco antes del mensaje
+            result.append(f"... código omitido (líneas {omitted_start}-{omitted_end}) ...")
+            result.append("")  # Línea en blanco después del mensaje
+
         # Agregar las líneas del chunk actual
         for line_num in range(start, end + 1):
             if line_num <= total_lines:
@@ -166,9 +168,9 @@ def merge_chunks(
                 idx = line_num - 1
                 line_content = lines[idx].rstrip('\n')
                 result.append(f"{line_num:4d}  {line_content}")
-        
+
         last_end = end
-    
+
     return '\n'.join(result)
 
 
