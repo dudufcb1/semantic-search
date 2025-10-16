@@ -46,36 +46,34 @@ def _format_search_results(query: str, workspace_path: str, merged_results: dict
         merged_results: Dict con resultados fusionados por archivo
 
     Returns:
-        String formateado con los resultados (path: chunk)
+        String formateado con los resultados (TEXTO PLANO, sin markdown)
     """
     if not merged_results:
-        return f"""# Resultados de búsqueda semántica
+        return f"""Resultados de búsqueda semántica
 
-**Workspace:** `{workspace_path}`
-**Query:** `{query}`
+Workspace: {workspace_path}
+Query: {query}
 
 No se encontraron resultados.
 """
 
-    output = f"""# Resultados de búsqueda semántica
+    output = f"""Resultados de búsqueda semántica
 
-**Workspace:** `{workspace_path}`
-**Query:** `{query}`
-**Archivos encontrados:** {len(merged_results)}
+Workspace: {workspace_path}
+Query: {query}
+Archivos encontrados: {len(merged_results)}
 
----
+{'=' * 80}
 
 """
 
     # Agregar cada archivo con su contenido fusionado
     for idx, (file_path, data) in enumerate(merged_results.items(), 1):
-        output += f"""## {idx}. `{file_path}`
+        output += f"""{idx}. {file_path}
 
-```
 {data['content']}
-```
 
----
+{'=' * 80}
 
 """
 
