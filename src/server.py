@@ -716,42 +716,44 @@ async def visit_other_project(
                 ctx=ctx
             )
 
-        # Paso 5: Formatear resultados en texto plano
+        # Paso 5: Formatear resultados en texto plano (MISMO formato que semantic_search)
         if ctx:
             await ctx.info(f"[Visit Other Project] Formateando {len(merged_results)} archivos...")
         else:
             print(f"[Visit Other Project] Formateando {len(merged_results)} archivos...", file=sys.stderr)
 
-        formatted_parts = []
+        # Usar el mismo formato que semantic_search
+        output = f"""Resultados de búsqueda en proyecto externo
 
-        # Header
-        formatted_parts.append(f"Query: {query}")
-        formatted_parts.append(f"Target: {resolution.identifier}")
-        formatted_parts.append(f"Archivos encontrados: {len(merged_results)}")
-        formatted_parts.append("")
+Target: {resolution.identifier}
+Query: {query}
+Archivos encontrados: {len(merged_results)}
 
-        # Brief si existe
+{'=' * 80}
+
+"""
+
+        # Agregar brief si existe
         if brief:
-            formatted_parts.append("=== BRIEF (LLM Analysis) ===")
-            formatted_parts.append(brief)
-            formatted_parts.append("")
-            formatted_parts.append("=== RESULTADOS ===")
-            formatted_parts.append("")
+            output += f"""ANÁLISIS DE RELEVANCIA:
 
-        # Resultados
-        for file_path, file_data in merged_results.items():
-            formatted_parts.append(f"Archivo: {file_path}")
-            formatted_parts.append(f"Cobertura: {file_data['coverage']:.1%} ({file_data['total_lines']} líneas totales)")
-            formatted_parts.append(f"Chunks: {file_data['chunks_count']}")
-            formatted_parts.append(f"Validado: {'Sí' if file_data['validated'] else 'No'}")
-            formatted_parts.append(f"Score: {1.0 - file_data['distance']:.4f}")
-            formatted_parts.append("")
-            formatted_parts.append(file_data['content'])
-            formatted_parts.append("")
-            formatted_parts.append("=" * 80)
-            formatted_parts.append("")
+{brief}
 
-        return "\n".join(formatted_parts)
+{'=' * 80}
+
+"""
+
+        # Agregar cada archivo con su contenido fusionado (MISMO formato que semantic_search)
+        for idx, (file_path, data) in enumerate(merged_results.items(), 1):
+            output += f"""{idx}. {file_path}
+
+{data['content']}
+
+{'=' * 80}
+
+"""
+
+        return output
 
     except ToolError:
         raise
