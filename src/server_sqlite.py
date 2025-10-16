@@ -707,6 +707,9 @@ async def visit_other_project(
 
         elif resolution.storage_type == "qdrant":
             # Buscar en Qdrant
+            if not workspace_path:
+                raise ToolError("El parámetro 'workspace_path' es requerido cuando se usa Qdrant para poder validar y fusionar chunks correctamente.")
+
             qdrant = get_qdrant_store()
             raw_results = await qdrant.search(
                 vector=vector,
@@ -716,8 +719,8 @@ async def visit_other_project(
                 max_results=settings.search_max_results,
                 collection_name=resolution.qdrant_collection
             )
-            # Determinar workspace_path para merge
-            target_workspace = workspace_path if workspace_path else "/"
+            # Usar workspace_path para merge
+            target_workspace = workspace_path
         else:
             raise ToolError(f"Tipo de storage no soportado: {resolution.storage_type}")
 
