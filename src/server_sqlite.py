@@ -40,6 +40,8 @@ embedder = Embedder(
 async def _generate_refined_brief(query: str, merged_results: dict, ctx: Context = None) -> str:
     """Genera un brief refinado usando LLM para analizar los resultados.
 
+    Usa la configuración del judge (judge_provider, judge_api_key, judge_base_url, judge_model_id).
+
     Args:
         query: La consulta de búsqueda original
         merged_results: Dict con resultados fusionados por archivo
@@ -50,9 +52,9 @@ async def _generate_refined_brief(query: str, merged_results: dict, ctx: Context
     """
     try:
         # Verificar que hay API key configurada
-        if not settings.llm_api_key:
+        if not settings.judge_api_key:
             if ctx:
-                await ctx.warning("[Refined Brief] No LLM API key configured, skipping brief generation")
+                await ctx.warning("[Refined Brief] No judge API key configured, skipping brief generation")
             return ""
 
         import httpx
@@ -78,32 +80,59 @@ Resultados encontrados:
 
 Genera un brief conciso en texto plano (sin markdown, sin formato especial). Enfócate primero en lo relevante, luego en lo no relevante, y finalmente en gaps."""
 
-        # Preparar request para Anthropic API
-        headers = {
-            "x-api-key": settings.llm_api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-
-        payload = {
-            "model": settings.llm_model_id,
-            "max_tokens": 500,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        }
+        # Determinar API endpoint y formato según provider
+        if settings.judge_provider == "openai":
+            # OpenAI API
+            api_url = "https://api.openai.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {settings.judge_api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": settings.judge_model_id,
+                "max_tokens": 500,
+                "temperature": 0.0,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ]
+            }
+        elif settings.judge_provider == "openai-compatible":
+            # OpenAI-compatible API (usa base_url custom)
+            api_url = f"{settings.judge_base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {settings.judge_api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": settings.judge_model_id,
+                "max_tokens": 500,
+                "temperature": 0.0,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ]
+            }
+        else:
+            # Unsupported provider
+            if ctx:
+                await ctx.warning(f"[Refined Brief] Unsupported judge provider: {settings.judge_provider}")
+            return ""
 
         # Hacer request HTTP
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                api_url,
                 headers=headers,
                 json=payload
             )
             response.raise_for_status()
 
             data = response.json()
-            brief = data["content"][0]["text"].strip()
+
+            # Extraer texto según formato de respuesta
+            if settings.judge_provider in ["openai", "openai-compatible"]:
+                brief = data["choices"][0]["message"]["content"].strip()
+            else:
+                brief = ""
 
         if ctx:
             await ctx.info(f"[Refined Brief] Generated brief: {len(brief)} chars")
