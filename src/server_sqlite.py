@@ -37,13 +37,94 @@ embedder = Embedder(
 )
 
 
-def _format_search_results(query: str, workspace_path: str, merged_results: dict) -> str:
+async def _generate_refined_brief(query: str, merged_results: dict, ctx: Context = None) -> str:
+    """Genera un brief refinado usando LLM para analizar los resultados.
+
+    Args:
+        query: La consulta de búsqueda original
+        merged_results: Dict con resultados fusionados por archivo
+        ctx: FastMCP context for logging
+
+    Returns:
+        Brief de 3-4 líneas analizando relevancia y gaps
+    """
+    try:
+        # Verificar que hay API key configurada
+        if not settings.llm_api_key:
+            if ctx:
+                await ctx.warning("[Refined Brief] No LLM API key configured, skipping brief generation")
+            return ""
+
+        import httpx
+
+        # Construir prompt con los resultados
+        files_summary = []
+        for idx, (file_path, data) in enumerate(merged_results.items(), 1):
+            # Tomar primeras 100 líneas de cada archivo para el análisis
+            content_lines = data['content'].split('\n')[:100]
+            content_preview = '\n'.join(content_lines)
+            files_summary.append(f"{idx}. {file_path}\n{content_preview}\n")
+
+        prompt = f"""Analiza estos resultados de búsqueda semántica y genera un brief de 3-4 líneas que:
+
+1. Identifica qué archivos SON relevantes para la query y por qué (1-2 líneas)
+2. Identifica qué archivos NO son relevantes (ruido/boilerplate) y por qué (1 línea)
+3. Detecta imports/referencias a archivos NO presentes en los resultados y sugiere revisarlos si son relevantes (1 línea)
+
+Query del usuario: "{query}"
+
+Resultados encontrados:
+{''.join(files_summary)}
+
+Genera un brief conciso en texto plano (sin markdown, sin formato especial). Enfócate primero en lo relevante, luego en lo no relevante, y finalmente en gaps."""
+
+        # Preparar request para Anthropic API
+        headers = {
+            "x-api-key": settings.llm_api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+
+        payload = {
+            "model": settings.llm_model_id,
+            "max_tokens": 500,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
+
+        # Hacer request HTTP
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            brief = data["content"][0]["text"].strip()
+
+        if ctx:
+            await ctx.info(f"[Refined Brief] Generated brief: {len(brief)} chars")
+
+        return brief
+
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"[Refined Brief] Error generating brief: {e}")
+        # Si falla, retornar string vacío (no bloquear la búsqueda)
+        return ""
+
+
+def _format_search_results(query: str, workspace_path: str, merged_results: dict, refined_brief: str = "") -> str:
     """Formatea los resultados de búsqueda semántica fusionados.
 
     Args:
         query: La consulta de búsqueda
         workspace_path: Ruta del workspace
         merged_results: Dict con resultados fusionados por archivo
+        refined_brief: Brief opcional generado por LLM
 
     Returns:
         String formateado con los resultados (TEXTO PLANO, sin markdown)
@@ -67,6 +148,16 @@ Archivos encontrados: {len(merged_results)}
 
 """
 
+    # Agregar brief refinado si existe
+    if refined_brief:
+        output += f"""ANÁLISIS DE RELEVANCIA:
+
+{refined_brief}
+
+{'=' * 80}
+
+"""
+
     # Agregar cada archivo con su contenido fusionado
     for idx, (file_path, data) in enumerate(merged_results.items(), 1):
         output += f"""{idx}. {file_path}
@@ -85,6 +176,7 @@ async def semantic_search(
     workspace_path: str,
     query: str,
     max_results: int = 20,
+    refined_answer: bool = False,
     ctx: Context = None
 ) -> str:
     """Realiza búsqueda semántica en la base de datos SQLite del workspace (.codebase/vectors.db).
@@ -93,6 +185,7 @@ async def semantic_search(
     1. Crea un embedding de la query usando el mismo modelo que indexó el código
     2. Busca los vectores más similares en vectors.db usando sqlite-vec
     3. Devuelve los resultados con score y código correspondiente
+    4. Opcionalmente genera un brief con análisis de relevancia usando LLM
 
     Args:
         workspace_path: Ruta absoluta del workspace (el servidor inferirá .codebase/vectors.db)
@@ -111,10 +204,13 @@ async def semantic_search(
                  • Combina conceptos: "autenticación y permisos de usuarios"
 
         max_results: Número máximo de resultados a devolver (default: 20)
+        refined_answer: Si True, genera un brief con análisis de relevancia usando LLM.
+                       El brief identifica archivos relevantes, ruido/boilerplate, y gaps
+                       en imports/referencias. Se inserta antes de los resultados. (default: False)
         ctx: FastMCP context for logging
 
     Returns:
-        Resultados formateados con score y código
+        Resultados formateados con score y código (opcionalmente con brief de análisis)
 
     Raises:
         ToolError: Si hay errores de validación o ejecución
@@ -237,8 +333,18 @@ async def semantic_search(
             else:
                 print(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos", file=sys.stderr)
 
+            # Generar brief refinado si se solicita
+            refined_brief = ""
+            if refined_answer and merged_results:
+                if ctx:
+                    await ctx.info(f"[Semantic Search] Generando brief refinado con LLM...")
+                else:
+                    print(f"[Semantic Search] Generando brief refinado con LLM...", file=sys.stderr)
+
+                refined_brief = await _generate_refined_brief(query, merged_results, ctx)
+
             # Formatear y retornar resultados
-            return _format_search_results(query, str(workspace), merged_results)
+            return _format_search_results(query, str(workspace), merged_results, refined_brief)
 
         finally:
             # Cerrar cursor y conexión

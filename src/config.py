@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     mcp_codebase_search_min_score: float = Field(default=0.1, ge=0.0, le=1.0)
     mcp_codebase_search_max_results: int = Field(default=20, ge=1, le=100)
 
+    # LLM configuration for refined answer (defaults to Anthropic Claude)
+    mcp_codebase_llm_api_key: Optional[str] = None
+    mcp_codebase_llm_model_id: str = "claude-3-5-sonnet-20241022"
+
     # Properties for easier access
     @property
     def default_workspace_path(self) -> Optional[str]:
@@ -153,6 +157,14 @@ class Settings(BaseSettings):
     @property
     def enable_rerank(self) -> bool:
         return self.mcp_codebase_enable_rerank
+
+    @property
+    def llm_api_key(self) -> Optional[str]:
+        return self.mcp_codebase_llm_api_key
+
+    @property
+    def llm_model_id(self) -> str:
+        return self.mcp_codebase_llm_model_id
 
 
 # Global settings instance
