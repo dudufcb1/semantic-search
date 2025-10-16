@@ -308,7 +308,9 @@ def simulate_chunk_numbering(
     for chunk_content, start_line, end_line in sorted_chunks:
         # Mostrar gap si existe
         if last_end > 0 and start_line > last_end + 1:
-            result.append(f"\n... código omitido (líneas {last_end + 1}-{start_line - 1}) ...\n")
+            result.append("")  # Línea en blanco antes
+            result.append(f"... código omitido (líneas {last_end + 1}-{start_line - 1}) ...")
+            result.append("")  # Línea en blanco después
 
         # Agregar chunk con numeración
         lines = chunk_content.split('\n')
