@@ -285,13 +285,48 @@ def should_show_complete_file(total_lines: int, coverage: float) -> bool:
         return False
 
 
+def merge_overlapping_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """
+    Fusiona rangos overlapping o contiguos en rangos únicos.
+
+    Args:
+        ranges: Lista de tuplas (start_line, end_line)
+
+    Returns:
+        Lista de rangos fusionados, ordenados por start_line
+
+    Ejemplo:
+        [(1, 349), (10, 349), (11, 349), (296, 315)] → [(1, 349)]
+        [(1, 10), (15, 20), (18, 25)] → [(1, 10), (15, 25)]
+    """
+    if not ranges:
+        return []
+
+    # Ordenar por start_line
+    sorted_ranges = sorted(ranges, key=lambda r: r[0])
+
+    merged = [sorted_ranges[0]]
+
+    for current_start, current_end in sorted_ranges[1:]:
+        last_start, last_end = merged[-1]
+
+        # Si el rango actual overlaps o es contiguo con el último
+        if current_start <= last_end + 1:
+            # Fusionar: extender el último rango si es necesario
+            merged[-1] = (last_start, max(last_end, current_end))
+        else:
+            # No overlap: agregar como nuevo rango
+            merged.append((current_start, current_end))
+
+    return merged
+
+
 def simulate_chunk_numbering(
     chunks: List[Tuple[str, int, int]]
 ) -> str:
     """
     Simula numeración de líneas cuando no hay archivo real disponible.
-
-    Concatena chunks con su numeración original, mostrando gaps omitidos.
+    Fusiona chunks overlapping para evitar duplicación de contenido.
 
     Args:
         chunks: Lista de tuplas (chunk_content, start_line, end_line)
@@ -299,25 +334,40 @@ def simulate_chunk_numbering(
     Returns:
         String con chunks numerados y gaps omitidos
     """
-    # Ordenar chunks por línea de inicio
-    sorted_chunks = sorted(chunks, key=lambda c: c[1])
+    if not chunks:
+        return ""
 
+    # Extraer rangos y fusionar overlaps
+    ranges = [(start, end) for _, start, end in chunks]
+    merged_ranges = merge_overlapping_ranges(ranges)
+
+    # Crear un mapa de líneas disponibles desde los chunks
+    # Usamos el chunk más largo que cubra cada línea
+    line_content = {}
+    for chunk_content, start_line, end_line in chunks:
+        lines = chunk_content.split('\n')
+        for i, line in enumerate(lines):
+            line_num = start_line + i
+            if line_num <= end_line:
+                # Si ya existe, mantener el más largo (más contexto)
+                if line_num not in line_content or len(line) > len(line_content[line_num]):
+                    line_content[line_num] = line
+
+    # Generar output usando rangos fusionados
     result = []
     last_end = 0
 
-    for chunk_content, start_line, end_line in sorted_chunks:
+    for start_line, end_line in merged_ranges:
         # Mostrar gap si existe
         if last_end > 0 and start_line > last_end + 1:
             result.append("")  # Línea en blanco antes
             result.append(f"... código omitido (líneas {last_end + 1}-{start_line - 1}) ...")
             result.append("")  # Línea en blanco después
 
-        # Agregar chunk con numeración
-        lines = chunk_content.split('\n')
-        for i, line in enumerate(lines):
-            line_num = start_line + i
-            if line_num <= end_line:
-                result.append(f"{line_num:4d}  {line}")
+        # Agregar líneas del rango fusionado
+        for line_num in range(start_line, end_line + 1):
+            if line_num in line_content:
+                result.append(f"{line_num:4d}  {line_content[line_num]}")
 
         last_end = end_line
 
@@ -435,8 +485,10 @@ def smart_merge_search_results(
                         for i, line in enumerate(lines)
                     )
                 else:
+                    # Fusionar rangos overlapping antes de mostrar
+                    merged_ranges = merge_overlapping_ranges(data['ranges'])
                     # Mostrar solo fragmentos
-                    content = merge_chunks(str(real_path), data['ranges'])
+                    content = merge_chunks(str(real_path), merged_ranges)
 
             except Exception as e:
                 # Fallback a simulación si hay error
