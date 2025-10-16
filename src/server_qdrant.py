@@ -7,20 +7,18 @@ from dataclasses import dataclass
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 
-try:
-    from config import settings
-    from embedder import Embedder
-    from chunk_merger import smart_merge_search_results
-    from storage_resolver import StorageResolver
-    from text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
-    from qdrant_store import QdrantStore
-except ImportError:
-    from .config import settings
-    from .embedder import Embedder
-    from .chunk_merger import smart_merge_search_results
-    from .storage_resolver import StorageResolver
-    from .text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
-    from .qdrant_store import QdrantStore
+# Add src directory to sys.path to enable absolute imports
+_current_file = Path(__file__).resolve()
+_src_dir = _current_file.parent
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
+
+from config import settings
+from embedder import Embedder
+from chunk_merger import smart_merge_search_results
+from storage_resolver import StorageResolver
+from text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
+from qdrant_store import QdrantStore
 
 
 @dataclass
