@@ -55,9 +55,16 @@ async def _generate_refined_brief(query: str, merged_results: dict, ctx: Context
         if not settings.judge_api_key:
             if ctx:
                 await ctx.warning("[Refined Brief] No judge API key configured, skipping brief generation")
+            else:
+                print("[Refined Brief] No judge API key configured", file=sys.stderr)
             return ""
 
         import httpx
+
+        if ctx:
+            await ctx.info(f"[Refined Brief] Starting brief generation with provider: {settings.judge_provider}")
+        else:
+            print(f"[Refined Brief] Starting brief generation with provider: {settings.judge_provider}", file=sys.stderr)
 
         # Construir prompt con los resultados
         files_summary = []
@@ -98,7 +105,8 @@ Genera un brief conciso en texto plano (sin markdown, sin formato especial). Enf
             }
         elif settings.judge_provider == "openai-compatible":
             # OpenAI-compatible API (usa base_url custom)
-            api_url = f"{settings.judge_base_url}/chat/completions"
+            base_url = settings.judge_base_url.rstrip("/")
+            api_url = f"{base_url}/chat/completions"
             headers = {
                 "Authorization": f"Bearer {settings.judge_api_key}",
                 "Content-Type": "application/json"
@@ -142,6 +150,10 @@ Genera un brief conciso en texto plano (sin markdown, sin formato especial). Enf
     except Exception as e:
         if ctx:
             await ctx.error(f"[Refined Brief] Error generating brief: {e}")
+        else:
+            print(f"[Refined Brief] Error generating brief: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
         # Si falla, retornar string vacío (no bloquear la búsqueda)
         return ""
 
