@@ -391,23 +391,23 @@ Archivos encontrados: {len(merged_results)}
 
 @mcp.tool
 async def semantic_search(
-    workspace_path: str,
     query: str,
+    qdrant_collection: Optional[str] = None,
+    workspace_path: Optional[str] = None,
     max_results: int = 20,
     refined_answer: bool = False,
     ctx: Context = None
 ) -> str:
-    """Realiza búsqueda semántica en Qdrant (lee colección desde .codebase/state.json).
+    """Realiza búsqueda semántica en Qdrant.
 
     Esta herramienta:
-    1. Lee .codebase/state.json para obtener la colección Qdrant
+    1. Obtiene la colección Qdrant (desde parámetro o leyendo .codebase/state.json)
     2. Crea un embedding de la query usando el mismo modelo que indexó el código
     3. Busca los vectores más similares en Qdrant
     4. Devuelve los resultados con score y código correspondiente
     5. Opcionalmente genera un brief con análisis de relevancia usando LLM
 
     Args:
-        workspace_path: Ruta absoluta del workspace (el servidor leerá .codebase/state.json)
         query: Pregunta en lenguaje natural sobre QUÉ buscas o QUÉ hace el código.
 
                Ejemplos efectivos:
@@ -422,6 +422,11 @@ async def semantic_search(
                  • Pregunta por funcionalidad, no por archivos
                  • Combina conceptos: "autenticación y permisos de usuarios"
 
+        qdrant_collection: Nombre de la colección Qdrant (ej: "codebase-abc123").
+                          Si se proporciona, se usa directamente.
+                          Si no se proporciona, se lee desde workspace_path/.codebase/state.json
+        workspace_path: Ruta absoluta del workspace (solo requerido si qdrant_collection no se proporciona).
+                       El servidor leerá .codebase/state.json para obtener la colección.
         max_results: Número máximo de resultados a devolver (default: 20)
         refined_answer: Si True, genera un brief con análisis de relevancia usando LLM.
                        El brief identifica archivos relevantes, ruido/boilerplate, y gaps
@@ -436,30 +441,49 @@ async def semantic_search(
     """
     try:
         # Validar parámetros
-        if not workspace_path or not workspace_path.strip():
-            raise ToolError("El parámetro 'workspace_path' es requerido y no puede estar vacío.")
-
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
 
-        # Validar workspace
-        workspace = Path(workspace_path.strip()).resolve()
+        # Determinar colección Qdrant
+        collection_name = None
+        workspace = None
 
-        # Verificar que el workspace existe
-        if not workspace.exists():
-            raise ToolError(f"El workspace no existe: {workspace}")
+        if qdrant_collection:
+            # Usar colección explícita
+            collection_name = qdrant_collection.strip()
+            if ctx:
+                await ctx.info(f"[Semantic Search] Usando colección explícita: {collection_name}")
+            else:
+                print(f"[Semantic Search] Usando colección explícita: {collection_name}", file=sys.stderr)
+        elif workspace_path:
+            # Leer colección desde state.json
+            if not workspace_path.strip():
+                raise ToolError("El parámetro 'workspace_path' no puede estar vacío.")
 
-        if not workspace.is_dir():
-            raise ToolError(f"El workspace no es un directorio: {workspace}")
+            workspace = Path(workspace_path.strip()).resolve()
 
-        # Leer state.json para obtener colección Qdrant
-        if ctx:
-            await ctx.info(f"[Semantic Search] Leyendo .codebase/state.json...")
+            # Verificar que el workspace existe
+            if not workspace.exists():
+                raise ToolError(f"El workspace no existe: {workspace}")
+
+            if not workspace.is_dir():
+                raise ToolError(f"El workspace no es un directorio: {workspace}")
+
+            # Leer state.json para obtener colección Qdrant
+            if ctx:
+                await ctx.info(f"[Semantic Search] Leyendo .codebase/state.json...")
+            else:
+                print(f"[Semantic Search] Leyendo .codebase/state.json...", file=sys.stderr)
+
+            state = _load_state_json(str(workspace))
+            collection_name = state["qdrantCollection"]
         else:
-            print(f"[Semantic Search] Leyendo .codebase/state.json...", file=sys.stderr)
-
-        state = _load_state_json(str(workspace))
-        collection_name = state["qdrantCollection"]
+            raise ToolError(
+                "Debes proporcionar 'qdrant_collection' o 'workspace_path'.\n\n"
+                "Ejemplos:\n"
+                "  • semantic_search(query='...', qdrant_collection='codebase-abc123')\n"
+                "  • semantic_search(query='...', workspace_path='/path/to/project')"
+            )
 
         if ctx:
             await ctx.info(f"[Semantic Search] Colección Qdrant: {collection_name}")
@@ -527,8 +551,11 @@ async def semantic_search(
             for r in raw_results
         ]
 
+        # Determinar workspace_path para merge (puede ser None si solo se pasó qdrant_collection)
+        merge_workspace_path = str(workspace) if workspace else ""
+
         merged_results = smart_merge_search_results(
-            workspace_path=str(workspace),
+            workspace_path=merge_workspace_path,
             search_results=raw_results_tuples,
             max_files=max_results  # Limitar a max_results archivos únicos
         )
@@ -550,15 +577,8 @@ async def semantic_search(
             refined_brief = await _generate_refined_brief(query, merged_results, ctx)
 
         # Formatear y retornar resultados
-        return _format_search_results(query, str(workspace), merged_results, refined_brief)
-
-    except sqlite3.Error as e:
-        error_msg = f"Error de SQLite: {str(e)}"
-        if ctx:
-            await ctx.error(f"[Semantic Search] {error_msg}")
-        else:
-            print(f"[Semantic Search] {error_msg}", file=sys.stderr)
-        raise ToolError(error_msg)
+        display_workspace = str(workspace) if workspace else f"colección '{collection_name}'"
+        return _format_search_results(query, display_workspace, merged_results, refined_brief)
 
     except ToolError:
         raise
