@@ -53,22 +53,26 @@ embedder = Embedder(
     base_url=settings.embedder_base_url
 )
 
-# Initialize services for visit_other_project
-text_judge = TextDirectJudge(
-    provider=settings.judge_provider,
-    api_key=settings.judge_api_key,
-    model_id=settings.judge_model_id,
-    max_tokens=settings.judge_max_tokens,
-    temperature=settings.judge_temperature,
-    base_url=settings.judge_base_url
-)
+# Initialize services for visit_other_project (lazy initialization to avoid errors if not configured)
+_qdrant_store = None
+_storage_resolver = None
 
-qdrant_store = QdrantStore(
-    url=settings.qdrant_url,
-    api_key=settings.qdrant_api_key
-)
+def get_qdrant_store():
+    """Lazy initialization of QdrantStore."""
+    global _qdrant_store
+    if _qdrant_store is None:
+        _qdrant_store = QdrantStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key
+        )
+    return _qdrant_store
 
-storage_resolver = StorageResolver(qdrant_store=qdrant_store)
+def get_storage_resolver():
+    """Lazy initialization of StorageResolver."""
+    global _storage_resolver
+    if _storage_resolver is None:
+        _storage_resolver = StorageResolver(qdrant_store=get_qdrant_store())
+    return _storage_resolver
 
 
 async def _generate_refined_brief_visit(query: str, results_summary: str, target_identifier: str, ctx: Context = None) -> str:
@@ -677,12 +681,13 @@ async def visit_other_project(
 
         # Paso 1: Resolver storage (SQLite o Qdrant)
         try:
-            resolution = storage_resolver.resolve(
+            resolver = get_storage_resolver()
+            resolution = resolver.resolve(
                 workspace_path=workspace_path,
                 qdrant_collection=qdrant_collection,
                 storage_type=storage_type
             )
-            storage_resolver.log_resolution(resolution, ctx)
+            resolver.log_resolution(resolution, ctx)
         except ValueError as e:
             raise ToolError(str(e))
 
@@ -702,7 +707,8 @@ async def visit_other_project(
 
         elif resolution.storage_type == "qdrant":
             # Buscar en Qdrant
-            raw_results = await qdrant_store.search(
+            qdrant = get_qdrant_store()
+            raw_results = await qdrant.search(
                 vector=vector,
                 workspace_path="",  # Not used when collection_name is provided
                 directory_prefix=None,
