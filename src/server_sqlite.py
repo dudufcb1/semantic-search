@@ -71,6 +71,107 @@ qdrant_store = QdrantStore(
 storage_resolver = StorageResolver(qdrant_store=qdrant_store)
 
 
+async def _generate_refined_brief_visit(query: str, results_summary: str, target_identifier: str, ctx: Context = None) -> str:
+    """Genera un brief refinado para visit_other_project usando LLM.
+
+    Similar a _generate_refined_brief pero con recordatorio de que es un proyecto externo.
+
+    Args:
+        query: La consulta de búsqueda original
+        results_summary: Resumen de archivos encontrados (lista de archivos con metadata)
+        target_identifier: Identificador del proyecto visitado
+        ctx: FastMCP context for logging
+
+    Returns:
+        Brief de 3-4 líneas analizando relevancia
+    """
+    try:
+        # Verificar que hay API key configurada
+        if not settings.judge_api_key:
+            if ctx:
+                await ctx.warning("[Refined Brief Visit] No judge API key configured, skipping brief generation")
+            else:
+                print("[Refined Brief Visit] No judge API key configured", file=sys.stderr)
+            return ""
+
+        import httpx
+
+        if ctx:
+            await ctx.info(f"[Refined Brief Visit] Starting brief generation with provider: {settings.judge_provider}")
+        else:
+            print(f"[Refined Brief Visit] Starting brief generation with provider: {settings.judge_provider}", file=sys.stderr)
+
+        prompt = f"""Estás analizando resultados de búsqueda en un PROYECTO EXTERNO (no el proyecto actual).
+
+IMPORTANTE: Este es un proyecto externo llamado "{target_identifier}". Tu rol es SOLO explorar y entender el código, NO debes sugerir modificaciones.
+
+Analiza estos resultados y genera un brief de 3-4 líneas que:
+1. Identifica qué archivos SON relevantes para la query y por qué (1-2 líneas)
+2. Identifica qué archivos NO son relevantes (ruido/boilerplate) si los hay (1 línea)
+3. Sugiere qué otros archivos podrían ser relevantes revisar en este proyecto externo (1 línea)
+
+Query del usuario: "{query}"
+
+Archivos encontrados en {target_identifier}:
+{results_summary}
+
+Genera un brief conciso en texto plano (sin markdown, sin formato especial). Recuerda: esto es un proyecto externo, solo explora."""
+
+        # Determinar API endpoint y formato según provider
+        if settings.judge_provider == "openai":
+            api_url = "https://api.openai.com/v1/chat/completions"
+        elif settings.judge_provider == "openai-compatible":
+            if not settings.judge_base_url:
+                if ctx:
+                    await ctx.warning("[Refined Brief Visit] openai-compatible provider requires judge_base_url")
+                else:
+                    print("[Refined Brief Visit] openai-compatible provider requires judge_base_url", file=sys.stderr)
+                return ""
+            api_url = f"{settings.judge_base_url.rstrip('/')}/chat/completions"
+        else:
+            if ctx:
+                await ctx.warning(f"[Refined Brief Visit] Unsupported provider: {settings.judge_provider}")
+            else:
+                print(f"[Refined Brief Visit] Unsupported provider: {settings.judge_provider}", file=sys.stderr)
+            return ""
+
+        # Hacer request al LLM
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {settings.judge_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": settings.judge_model_id,
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 300
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            brief = result["choices"][0]["message"]["content"].strip()
+
+            if ctx:
+                await ctx.info(f"[Refined Brief Visit] Brief generated successfully ({len(brief)} chars)")
+            else:
+                print(f"[Refined Brief Visit] Brief generated successfully ({len(brief)} chars)", file=sys.stderr)
+
+            return brief
+
+    except Exception as e:
+        # Si falla, devolver string vacío (no romper la búsqueda)
+        if ctx:
+            await ctx.warning(f"[Refined Brief Visit] Failed to generate brief: {str(e)}")
+        else:
+            print(f"[Refined Brief Visit] Failed to generate brief: {str(e)}", file=sys.stderr)
+        return ""
+
+
 async def _generate_refined_brief(query: str, merged_results: dict, ctx: Context = None) -> str:
     """Genera un brief refinado usando LLM para analizar los resultados.
 
@@ -493,57 +594,7 @@ async def semantic_search(
         raise ToolError(error_msg)
 
 
-def _format_search_results_explore(query: str, target_identifier: str, results: list[SearchResult]) -> str:
-    """Format search results for visit_other_project tool."""
-    if not results:
-        return f'No se encontraron coincidencias para "{query}" en {target_identifier}.'
 
-    formatted_parts = [f'Query: {query}', f'Target: {target_identifier}', '']
-
-    for result in results:
-        formatted_parts.append(f'Ruta: {result.file_path}')
-        formatted_parts.append(f'Score: {result.score:.4f}')
-        formatted_parts.append(f'Líneas: {result.start_line}-{result.end_line}')
-        formatted_parts.append('---')
-        formatted_parts.append(result.code_chunk.strip())
-        formatted_parts.append('')
-
-    return '\n'.join(formatted_parts)
-
-
-def _format_rerank_results_explore(query: str, target_identifier: str, reranked: list, summary: Optional[str] = None, usages: Optional[list[str]] = None) -> str:
-    """Format reranked results for visit_other_project tool."""
-    if not reranked:
-        return f'No se encontraron resultados relevantes para "{query}" en {target_identifier}.'
-
-    formatted_parts = [f'Query: {query}', f'Target: {target_identifier}', '']
-
-    if summary:
-        formatted_parts.append('=== RESUMEN ===')
-        formatted_parts.append(summary)
-        formatted_parts.append('')
-        formatted_parts.append('=== RESULTADOS REORDENADOS ===')
-        formatted_parts.append('')
-
-    for result in reranked:
-        formatted_parts.append(f'Ruta: {result.file_path}')
-        formatted_parts.append(f'Relevancia: {result.relevancia:.4f}')
-        formatted_parts.append(f'Score original: {result.score:.4f}')
-        formatted_parts.append(f'Líneas: {result.start_line}-{result.end_line}')
-        if result.razon:
-            formatted_parts.append(f'Razón: {result.razon}')
-        formatted_parts.append('---')
-        formatted_parts.append(result.code_chunk.strip())
-        formatted_parts.append('')
-
-    # Add usages section if present
-    if usages and len(usages) > 0:
-        formatted_parts.append('=== USAGES DETECTADOS ===')
-        for usage in usages:
-            formatted_parts.append(f'• {usage}')
-        formatted_parts.append('')
-
-    return '\n'.join(formatted_parts)
 
 
 @mcp.tool
@@ -552,8 +603,8 @@ async def visit_other_project(
     workspace_path: Optional[str] = None,
     qdrant_collection: Optional[str] = None,
     storage_type: Literal["sqlite", "qdrant"] = "qdrant",
-    path: Optional[str] = None,
-    mode: Literal["rerank", "summary"] = "rerank",
+    refined_answer: bool = False,
+    max_results: int = 20,
     ctx: Context = None
 ) -> str:
     """Visita y busca en otros proyectos/workspaces diferentes al actual.
@@ -562,6 +613,9 @@ async def visit_other_project(
     al actual, útil para buscar patrones en proyectos relacionados o diferentes codebases.
 
     Soporta tanto SQLite (.codebase/vectors.db) como Qdrant para almacenamiento de vectores.
+
+    IMPORTANTE: Esta herramienta es SOLO para exploración. NO debes modificar archivos
+    del proyecto visitado, solo explorar y entender el código.
 
     Lógica de resolución de storage:
 
@@ -578,16 +632,16 @@ async def visit_other_project(
        → Usar Qdrant
 
     Args:
-        query: Texto natural a buscar en el código
+        query: Texto natural a buscar en el código (ej: 'función de autenticación', 'manejo de errores')
         workspace_path: Ruta del workspace a visitar (opcional si qdrant_collection está presente)
         qdrant_collection: Nombre de colección Qdrant explícito (prioridad máxima)
         storage_type: Tipo de storage preferido: "sqlite" o "qdrant" (default: "qdrant")
-        path: Prefijo de ruta opcional para filtrar resultados
-        mode: Modo de operación - "rerank" solo reordena, "summary" incluye resumen
+        refined_answer: Si True, genera un brief con análisis LLM antes de los resultados (default: False)
+        max_results: Número máximo de archivos únicos a retornar (default: 20)
         ctx: FastMCP context for logging
 
     Returns:
-        Resultados de búsqueda reordenados formateados como texto, opcionalmente con resumen
+        Resultados de búsqueda con merge inteligente, formato texto plano, opcionalmente con brief LLM
 
     Examples:
         # Buscar en SQLite de otro proyecto
@@ -597,10 +651,11 @@ async def visit_other_project(
             storage_type="sqlite"
         )
 
-        # Buscar en colección Qdrant específica
+        # Buscar en colección Qdrant específica con brief
         visit_other_project(
             query="payment processing",
-            qdrant_collection="codebase-abc123"
+            qdrant_collection="codebase-abc123",
+            refined_answer=True
         )
 
         # Buscar en Qdrant calculado desde workspace (default)
@@ -610,17 +665,17 @@ async def visit_other_project(
         )
     """
     try:
+        # Paso 0: Validar query
+        if not query or not query.strip():
+            raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
+
         # Log request
         if ctx:
             await ctx.info(f"[Visit Other Project] Query: {query}, Workspace: {workspace_path}, Collection: {qdrant_collection}, Storage: {storage_type}")
         else:
             print(f"[Visit Other Project] Query: {query}, Workspace: {workspace_path}, Collection: {qdrant_collection}, Storage: {storage_type}", file=sys.stderr)
 
-        # Validate query
-        if not query or not query.strip():
-            raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
-
-        # Resolve storage
+        # Paso 1: Resolver storage (SQLite o Qdrant)
         try:
             resolution = storage_resolver.resolve(
                 workspace_path=workspace_path,
@@ -631,80 +686,126 @@ async def visit_other_project(
         except ValueError as e:
             raise ToolError(str(e))
 
-        # Create embedding
+        # Paso 2: Crear embedding y buscar
         vector = await embedder.create_embedding(query)
 
-        # Search based on resolved storage type
         if resolution.storage_type == "sqlite":
-            # Search in SQLite
-            search_results = await _search_sqlite_vectors(
+            # Buscar en SQLite
+            raw_results = await _search_sqlite_vectors(
                 db_path=resolution.sqlite_path,
                 vector=vector,
                 max_results=settings.search_max_results,
                 ctx=ctx
             )
+            # Determinar workspace_path para merge
+            target_workspace = workspace_path if workspace_path else str(resolution.sqlite_path.parent.parent)
 
         elif resolution.storage_type == "qdrant":
-            # Search in Qdrant
-            search_results = await qdrant_store.search(
+            # Buscar en Qdrant
+            raw_results = await qdrant_store.search(
                 vector=vector,
                 workspace_path="",  # Not used when collection_name is provided
-                directory_prefix=path,
+                directory_prefix=None,
                 min_score=settings.search_min_score,
                 max_results=settings.search_max_results,
                 collection_name=resolution.qdrant_collection
             )
+            # Determinar workspace_path para merge
+            target_workspace = workspace_path if workspace_path else "/"
         else:
             raise ToolError(f"Tipo de storage no soportado: {resolution.storage_type}")
 
-        if not search_results:
+        if not raw_results:
             return f'No se encontraron resultados para "{query}" en {resolution.identifier}.'
 
-        # Convert to TextDirectJudge format
-        text_judge_results = [
-            TextJudgeSearchResult(
-                file_path=r.file_path,
-                code_chunk=r.code_chunk,
-                start_line=r.start_line,
-                end_line=r.end_line,
-                score=r.score
-            )
-            for r in search_results
+        # Paso 3: Fusionar chunks por archivo usando smart_merge
+        if ctx:
+            await ctx.info(f"[Visit Other Project] Fusionando chunks por archivo...")
+        else:
+            print(f"[Visit Other Project] Fusionando chunks por archivo...", file=sys.stderr)
+
+        # Convertir SearchResult a tuplas para smart_merge_search_results
+        raw_results_tuples = [
+            (r.file_path, r.code_chunk, r.start_line, r.end_line, 1.0 - r.score)  # distance = 1.0 - score
+            for r in raw_results
         ]
 
-        # Rerank with Text Direct LLM
-        if ctx:
-            await ctx.info(f"[Visit Other Project] Reordenando {len(text_judge_results)} resultados con TextDirectJudge")
+        merged_results = smart_merge_search_results(
+            workspace_path=target_workspace,
+            search_results=raw_results_tuples,
+            max_files=max_results  # Limitar a max_results archivos únicos
+        )
 
-        try:
-            if mode == "summary":
-                reranked, summary = await text_judge.rerank_with_summary(query, text_judge_results)
-            else:
-                reranked = await text_judge.rerank(query, text_judge_results)
-                summary = None
-        except Exception as e:
-            # FALLBACK: Si el TextDirectJudge falla, devolver resultados originales
+        if not merged_results:
+            return f'No se encontraron resultados después del merge para "{query}" en {resolution.identifier}.'
+
+        # Paso 4: Generar brief con LLM si refined_answer=True
+        brief = ""
+        if refined_answer:
             if ctx:
-                await ctx.info(f"[Visit Other Project] TextDirectJudge failed, fallback to original results: {str(e)}")
+                await ctx.info(f"[Visit Other Project] Generando brief con LLM...")
             else:
-                print(f"[Visit Other Project] TextDirectJudge failed, fallback to original results: {str(e)}", file=sys.stderr)
-            return _format_search_results_explore(query, resolution.identifier, search_results)
+                print(f"[Visit Other Project] Generando brief con LLM...", file=sys.stderr)
 
-        # Apply max results limit
-        reranked = reranked[:settings.reranking_max_results]
+            # Preparar contexto para el LLM
+            results_summary = []
+            for file_path, file_data in list(merged_results.items())[:10]:  # Primeros 10 archivos
+                results_summary.append(f"- {file_path} (coverage: {file_data['coverage']:.1%}, chunks: {file_data['chunks_count']})")
 
-        # Format and return results
-        return _format_rerank_results_explore(query, resolution.identifier, reranked, summary)
+            brief = await _generate_refined_brief_visit(
+                query=query,
+                results_summary="\n".join(results_summary),
+                target_identifier=resolution.identifier,
+                ctx=ctx
+            )
+
+        # Paso 5: Formatear resultados en texto plano
+        if ctx:
+            await ctx.info(f"[Visit Other Project] Formateando {len(merged_results)} archivos...")
+        else:
+            print(f"[Visit Other Project] Formateando {len(merged_results)} archivos...", file=sys.stderr)
+
+        formatted_parts = []
+
+        # Header
+        formatted_parts.append(f"Query: {query}")
+        formatted_parts.append(f"Target: {resolution.identifier}")
+        formatted_parts.append(f"Archivos encontrados: {len(merged_results)}")
+        formatted_parts.append("")
+
+        # Brief si existe
+        if brief:
+            formatted_parts.append("=== BRIEF (LLM Analysis) ===")
+            formatted_parts.append(brief)
+            formatted_parts.append("")
+            formatted_parts.append("=== RESULTADOS ===")
+            formatted_parts.append("")
+
+        # Resultados
+        for file_path, file_data in merged_results.items():
+            formatted_parts.append(f"Archivo: {file_path}")
+            formatted_parts.append(f"Cobertura: {file_data['coverage']:.1%} ({file_data['total_lines']} líneas totales)")
+            formatted_parts.append(f"Chunks: {file_data['chunks_count']}")
+            formatted_parts.append(f"Validado: {'Sí' if file_data['validated'] else 'No'}")
+            formatted_parts.append(f"Score: {1.0 - file_data['distance']:.4f}")
+            formatted_parts.append("")
+            formatted_parts.append(file_data['content'])
+            formatted_parts.append("")
+            formatted_parts.append("=" * 80)
+            formatted_parts.append("")
+
+        return "\n".join(formatted_parts)
 
     except ToolError:
         raise
+
     except Exception as e:
-        error_msg = str(e)
+        error_msg = f"Error inesperado: {str(e)}"
         if ctx:
-            await ctx.info(f"[Visit Other Project] Error: {error_msg}")
+            await ctx.error(f"[Visit Other Project] {error_msg}")
         else:
-            print(f"[Visit Other Project] Error: {error_msg}", file=sys.stderr)
-        raise ToolError(f"Error al visitar otro proyecto: {error_msg}")
+            print(f"[Visit Other Project] {error_msg}", file=sys.stderr)
+        raise ToolError(error_msg)
 
 
 # Entry point for fastmcp CLI
