@@ -10,12 +10,14 @@ try:
     from .judge import Judge, SearchResult as JudgeSearchResult
     from .text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
     from .qdrant_store import QdrantStore, SearchResult
+    from .storage_resolver import StorageResolver
 except ImportError:
     from config import settings
     from embedder import Embedder
     from judge import Judge, SearchResult as JudgeSearchResult
     from text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
     from qdrant_store import QdrantStore, SearchResult
+    from storage_resolver import StorageResolver
 
 
 # Initialize FastMCP server
@@ -56,6 +58,9 @@ qdrant_store = QdrantStore(
     url=settings.qdrant_url,
     api_key=settings.qdrant_api_key
 )
+
+# Storage resolver for visit_other_project
+storage_resolver = StorageResolver(qdrant_store=qdrant_store)
 
 
 def _format_search_results(query: str, workspace_path: str, results: list[SearchResult]) -> str:
@@ -521,6 +526,173 @@ async def superior_codebase_rerank(
 
         # Re-raise the exception instead of trying to use potentially undefined variables
         raise
+
+
+@mcp.tool
+async def visit_other_project(
+    query: str,
+    workspace_path: Optional[str] = None,
+    qdrant_collection: Optional[str] = None,
+    storage_type: Literal["sqlite", "qdrant"] = "qdrant",
+    path: Optional[str] = None,
+    mode: Literal["rerank", "summary"] = "rerank",
+    ctx: Context = None
+) -> str:
+    """Visita y busca en otros proyectos/workspaces diferentes al actual.
+
+    Esta herramienta permite realizar búsquedas semánticas en proyectos remotos o diferentes
+    al actual, útil para buscar patrones en proyectos relacionados o diferentes codebases.
+
+    Soporta tanto SQLite (.codebase/vectors.db) como Qdrant para almacenamiento de vectores.
+
+    Lógica de resolución de storage:
+
+    1. Si `qdrant_collection` está especificado:
+       → Usar Qdrant con esa colección (prioridad máxima)
+
+    2. Si `storage_type="sqlite"` y `workspace_path` está especificado:
+       → Buscar SQLite en {workspace_path}/.codebase/vectors.db
+       → Si existe: usar SQLite
+       → Si NO existe: fallback a Qdrant (calcular colección desde workspace_path)
+
+    3. Si `storage_type="qdrant"` (default) y `workspace_path` está especificado:
+       → Calcular colección Qdrant desde workspace_path
+       → Usar Qdrant
+
+    Args:
+        query: Texto natural a buscar en el código
+        workspace_path: Ruta del workspace a visitar (opcional si qdrant_collection está presente)
+        qdrant_collection: Nombre de colección Qdrant explícito (prioridad máxima)
+        storage_type: Tipo de storage preferido: "sqlite" o "qdrant" (default: "qdrant")
+        path: Prefijo de ruta opcional para filtrar resultados
+        mode: Modo de operación - "rerank" solo reordena, "summary" incluye resumen
+        ctx: FastMCP context for logging
+
+    Returns:
+        Resultados de búsqueda reordenados formateados como texto, opcionalmente con resumen
+
+    Examples:
+        # Buscar en SQLite de otro proyecto
+        visit_other_project(
+            query="authentication logic",
+            workspace_path="/path/to/other/project",
+            storage_type="sqlite"
+        )
+
+        # Buscar en colección Qdrant específica
+        visit_other_project(
+            query="payment processing",
+            qdrant_collection="codebase-abc123"
+        )
+
+        # Buscar en Qdrant calculado desde workspace (default)
+        visit_other_project(
+            query="error handling",
+            workspace_path="/path/to/project"
+        )
+    """
+    try:
+        # Log request
+        if ctx:
+            await ctx.info(f"[Visit Other Project] Query: {query}, Workspace: {workspace_path}, Collection: {qdrant_collection}, Storage: {storage_type}")
+        else:
+            print(f"[Visit Other Project] Query: {query}, Workspace: {workspace_path}, Collection: {qdrant_collection}, Storage: {storage_type}", file=sys.stderr)
+
+        # Validate query
+        if not query or not query.strip():
+            raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
+
+        # Resolve storage
+        try:
+            resolution = storage_resolver.resolve(
+                workspace_path=workspace_path,
+                qdrant_collection=qdrant_collection,
+                storage_type=storage_type
+            )
+            storage_resolver.log_resolution(resolution, ctx)
+        except ValueError as e:
+            raise ToolError(str(e))
+
+        # Create embedding
+        vector = await embedder.create_embedding(query)
+
+        # Search based on resolved storage type
+        if resolution.storage_type == "sqlite":
+            # Import SQLite search function
+            try:
+                from .server_sqlite import _search_sqlite_vectors
+            except ImportError:
+                from server_sqlite import _search_sqlite_vectors
+
+            # Search in SQLite
+            search_results = await _search_sqlite_vectors(
+                db_path=resolution.sqlite_path,
+                vector=vector,
+                max_results=settings.search_max_results,
+                ctx=ctx
+            )
+
+        elif resolution.storage_type == "qdrant":
+            # Search in Qdrant
+            search_results = await qdrant_store.search(
+                vector=vector,
+                workspace_path="",  # Not used when collection_name is provided
+                directory_prefix=path,
+                min_score=settings.search_min_score,
+                max_results=settings.search_max_results,
+                collection_name=resolution.qdrant_collection
+            )
+        else:
+            raise ToolError(f"Tipo de storage no soportado: {resolution.storage_type}")
+
+        if not search_results:
+            return f'No se encontraron resultados para "{query}" en {resolution.identifier}.'
+
+        # Convert to TextDirectJudge format
+        text_judge_results = [
+            TextJudgeSearchResult(
+                file_path=r.file_path,
+                code_chunk=r.code_chunk,
+                start_line=r.start_line,
+                end_line=r.end_line,
+                score=r.score
+            )
+            for r in search_results
+        ]
+
+        # Rerank with Text Direct LLM
+        if ctx:
+            await ctx.info(f"[Visit Other Project] Reordenando {len(text_judge_results)} resultados con TextDirectJudge")
+
+        try:
+            if mode == "summary":
+                reranked, summary = await text_judge.rerank_with_summary(query, text_judge_results)
+            else:
+                reranked = await text_judge.rerank(query, text_judge_results)
+                summary = None
+        except Exception as e:
+            # FALLBACK: Si el TextDirectJudge falla, devolver resultados originales
+            if ctx:
+                await ctx.info(f"[Visit Other Project] TextDirectJudge failed, fallback to original results: {str(e)}")
+            else:
+                print(f"[Visit Other Project] TextDirectJudge failed, fallback to original results: {str(e)}", file=sys.stderr)
+            return _format_search_results_explore(query, resolution.identifier, search_results)
+
+        # Apply max results limit
+        reranked = reranked[:settings.reranking_max_results]
+
+        # Format and return results
+        return _format_rerank_results_explore(query, resolution.identifier, reranked, summary)
+
+    except ToolError:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        if ctx:
+            await ctx.info(f"[Visit Other Project] Error: {error_msg}")
+        else:
+            print(f"[Visit Other Project] Error: {error_msg}", file=sys.stderr)
+        raise ToolError(f"Error al visitar otro proyecto: {error_msg}")
 
 
 # Entry point for fastmcp CLI

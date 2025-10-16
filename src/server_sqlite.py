@@ -3,6 +3,7 @@ import sys
 import sqlite3
 from typing import Optional
 from pathlib import Path
+from dataclasses import dataclass
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 
@@ -20,6 +21,16 @@ except ImportError:
     from config import settings
     from embedder import Embedder
     from chunk_merger import smart_merge_search_results
+
+
+@dataclass
+class SearchResult:
+    """Search result from SQLite vector store."""
+    file_path: str
+    code_chunk: str
+    start_line: int
+    end_line: int
+    score: float
 
 
 # Initialize FastMCP server
@@ -212,6 +223,94 @@ Archivos encontrados: {len(merged_results)}
     return output
 
 
+async def _search_sqlite_vectors(
+    db_path: Path,
+    vector: list[float],
+    max_results: int = 20,
+    ctx: Context = None
+) -> list[SearchResult]:
+    """Busca vectores similares en una base de datos SQLite.
+
+    Esta función es reutilizable y puede ser llamada desde otras herramientas.
+
+    Args:
+        db_path: Ruta al archivo vectors.db
+        vector: Vector de embedding (lista de floats)
+        max_results: Número máximo de resultados
+        ctx: FastMCP context para logging (opcional)
+
+    Returns:
+        Lista de objetos SearchResult
+
+    Raises:
+        Exception: Si hay errores al buscar en SQLite
+    """
+    # Conectar a la base de datos
+    conn = sqlite3.connect(str(db_path))
+
+    try:
+        # Cargar extensión sqlite-vec
+        if sqlite_vec is None:
+            raise Exception(
+                "La librería 'sqlite-vec' no está instalada.\n"
+                "Instálala con: pip install sqlite-vec"
+            )
+
+        sqlite_vec.load(conn)
+
+        if ctx:
+            await ctx.info(f"[SQLite Search] Extensión sqlite-vec cargada")
+        else:
+            print(f"[SQLite Search] Extensión sqlite-vec cargada", file=sys.stderr)
+
+        cursor = conn.cursor()
+
+        # Convertir vector a formato JSON
+        vector_json = "[" + ",".join(str(v) for v in vector) + "]"
+
+        # Ejecutar búsqueda semántica
+        sql_query = """
+            SELECT
+                file_path,
+                code_chunk,
+                start_line,
+                end_line,
+                distance
+            FROM code_vectors
+            WHERE embedding MATCH ?
+            ORDER BY distance ASC
+            LIMIT ?
+        """
+
+        cursor.execute(sql_query, (vector_json, max_results))
+        raw_results = cursor.fetchall()
+
+        if ctx:
+            await ctx.info(f"[SQLite Search] Encontrados {len(raw_results)} chunks")
+        else:
+            print(f"[SQLite Search] Encontrados {len(raw_results)} chunks", file=sys.stderr)
+
+        # Convertir a objetos SearchResult
+        results = []
+        for row in raw_results:
+            file_path, code_chunk, start_line, end_line, distance = row
+            score = 1.0 - distance  # Convertir distance a score
+
+            results.append(SearchResult(
+                file_path=file_path,
+                code_chunk=code_chunk,
+                start_line=start_line,
+                end_line=end_line,
+                score=score
+            ))
+
+        cursor.close()
+        return results
+
+    finally:
+        conn.close()
+
+
 @mcp.tool
 async def semantic_search(
     workspace_path: str,
@@ -301,96 +400,55 @@ async def semantic_search(
         else:
             print(f"[Semantic Search] Embedding creado: {len(vector)} dimensiones", file=sys.stderr)
 
-        # Paso 2: Buscar en SQLite usando vec_distance_cosine
+        # Paso 2: Buscar en SQLite usando la función helper
         if ctx:
             await ctx.info(f"[Semantic Search] Buscando en vectors.db...")
         else:
             print(f"[Semantic Search] Buscando en vectors.db...", file=sys.stderr)
 
-        # Conectar a la base de datos
-        conn = sqlite3.connect(str(db_path))
+        raw_results = await _search_sqlite_vectors(
+            db_path=db_path,
+            vector=vector,
+            max_results=max_results,
+            ctx=ctx
+        )
 
-        try:
-            # Cargar extensión sqlite-vec usando la librería Python
-            if sqlite_vec is None:
-                raise ToolError(
-                    "La librería 'sqlite-vec' no está instalada.\n"
-                    "Instálala con: pip install sqlite-vec\n"
-                    "O con uv: uv pip install sqlite-vec"
-                )
+        # Paso 3: Fusionar chunks por archivo usando smart_merge
+        if ctx:
+            await ctx.info(f"[Semantic Search] Fusionando chunks por archivo...")
+        else:
+            print(f"[Semantic Search] Fusionando chunks por archivo...", file=sys.stderr)
 
-            # Cargar la extensión en la conexión
-            sqlite_vec.load(conn)
+        # Convertir SearchResult a tuplas para smart_merge_search_results
+        raw_results_tuples = [
+            (r.file_path, r.code_chunk, r.start_line, r.end_line, 1.0 - r.score)  # distance = 1.0 - score
+            for r in raw_results
+        ]
 
+        merged_results = smart_merge_search_results(
+            workspace_path=str(workspace),
+            search_results=raw_results_tuples,
+            max_files=max_results  # Limitar a max_results archivos únicos
+        )
+
+        # Log de archivos únicos
+        if ctx:
+            await ctx.info(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos")
+        else:
+            print(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos", file=sys.stderr)
+
+        # Generar brief refinado si se solicita
+        refined_brief = ""
+        if refined_answer and merged_results:
             if ctx:
-                await ctx.info(f"[Semantic Search] Extensión sqlite-vec cargada correctamente")
+                await ctx.info(f"[Semantic Search] Generando brief refinado con LLM...")
             else:
-                print(f"[Semantic Search] Extensión sqlite-vec cargada correctamente", file=sys.stderr)
+                print(f"[Semantic Search] Generando brief refinado con LLM...", file=sys.stderr)
 
-            cursor = conn.cursor()
+            refined_brief = await _generate_refined_brief(query, merged_results, ctx)
 
-            # Convertir vector a formato JSON para la consulta
-            vector_json = "[" + ",".join(str(v) for v in vector) + "]"
-
-            # Ejecutar búsqueda semántica usando MATCH (sqlite-vec syntax)
-            # Nota: sqlite-vec usa MATCH en lugar de vec_distance_cosine
-            sql_query = """
-                SELECT
-                    file_path,
-                    code_chunk,
-                    start_line,
-                    end_line,
-                    distance
-                FROM code_vectors
-                WHERE embedding MATCH ?
-                ORDER BY distance ASC
-                LIMIT ?
-            """
-
-            cursor.execute(sql_query, (vector_json, max_results))
-            raw_results = cursor.fetchall()
-
-            # Log de resultados crudos
-            if ctx:
-                await ctx.info(f"[Semantic Search] Búsqueda exitosa: {len(raw_results)} chunks encontrados")
-            else:
-                print(f"[Semantic Search] Búsqueda exitosa: {len(raw_results)} chunks encontrados", file=sys.stderr)
-
-            # Paso 3: Fusionar chunks por archivo usando smart_merge
-            if ctx:
-                await ctx.info(f"[Semantic Search] Fusionando chunks por archivo...")
-            else:
-                print(f"[Semantic Search] Fusionando chunks por archivo...", file=sys.stderr)
-
-            merged_results = smart_merge_search_results(
-                workspace_path=str(workspace),
-                search_results=raw_results,
-                max_files=max_results  # Limitar a max_results archivos únicos
-            )
-
-            # Log de archivos únicos
-            if ctx:
-                await ctx.info(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos")
-            else:
-                print(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos", file=sys.stderr)
-
-            # Generar brief refinado si se solicita
-            refined_brief = ""
-            if refined_answer and merged_results:
-                if ctx:
-                    await ctx.info(f"[Semantic Search] Generando brief refinado con LLM...")
-                else:
-                    print(f"[Semantic Search] Generando brief refinado con LLM...", file=sys.stderr)
-
-                refined_brief = await _generate_refined_brief(query, merged_results, ctx)
-
-            # Formatear y retornar resultados
-            return _format_search_results(query, str(workspace), merged_results, refined_brief)
-
-        finally:
-            # Cerrar cursor y conexión
-            cursor.close()
-            conn.close()
+        # Formatear y retornar resultados
+        return _format_search_results(query, str(workspace), merged_results, refined_brief)
 
     except sqlite3.Error as e:
         error_msg = f"Error de SQLite: {str(e)}"
