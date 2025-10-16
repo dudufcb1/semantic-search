@@ -351,6 +351,9 @@ async def superior_codebase_rerank(
     query: str,
     workspace_path: str,
     mode: Literal["rerank", "summary"] = "rerank",
+    include_docs: bool = False,
+    include_config: bool = False,
+    search_intent: Optional[str] = None,
     ctx: Context = None
 ) -> str:
     """Realiza una búsqueda semántica y reordena los resultados usando un LLM Judge.
@@ -362,6 +365,9 @@ async def superior_codebase_rerank(
         query: Texto natural a buscar en el código
         workspace_path: Ruta absoluta del workspace a buscar (REQUERIDO)
         mode: Modo de operación - "rerank" solo reordena, "summary" incluye resumen
+        include_docs: Si True, incluye archivos de documentación (.md, .txt, etc.). Por defecto False.
+        include_config: Si True, incluye archivos de configuración (.json, .ini, .yaml, etc.). Por defecto False.
+        search_intent: Palabra clave para concatenar a la query (ej: "implementation", "usage", "flow"). Se concatena como palabra adicional.
         ctx: FastMCP context for logging
 
     Returns:
@@ -381,11 +387,17 @@ async def superior_codebase_rerank(
         if not workspace_path or not workspace_path.strip():
             raise ToolError("El parámetro 'workspace_path' es requerido.")
 
+        # Concatenate search_intent to query if provided
+        final_query = query
+        if search_intent and search_intent.strip():
+            final_query = f"{query} {search_intent.strip()}"
+            print(f"[DEBUG Rerank] Query modificada con search_intent: '{final_query}'", file=sys.stderr)
+
         # Step 1: Perform initial search
         if ctx:
-            await ctx.info(f"[Rerank] Buscando resultados para query: '{query}'")
+            await ctx.info(f"[Rerank] Buscando resultados para query: '{final_query}'")
 
-        vector = await embedder.create_embedding(query)
+        vector = await embedder.create_embedding(final_query)
         search_results = await qdrant_store.search(
             vector=vector,
             workspace_path=workspace_path,
@@ -393,13 +405,48 @@ async def superior_codebase_rerank(
             min_score=settings.search_min_score,
             max_results=settings.search_max_results
         )
-        
+
         if not search_results:
-            return f'No se encontraron resultados para "{query}" en el workspace "{workspace_path}".'
-        
-        # Step 2: Convert to Judge format
-        judge_results = [
-            JudgeSearchResult(
+            return f'No se encontraron resultados para "{final_query}" en el workspace "{workspace_path}".'
+
+        # Step 2: Filter documentation files if include_docs=False
+        if not include_docs:
+            original_count = len(search_results)
+            search_results = [
+                r for r in search_results
+                if not r.file_path.endswith(('.md', '.txt', '.rst', '.adoc', '.markdown'))
+            ]
+            filtered_count = original_count - len(search_results)
+            if filtered_count > 0:
+                print(f"[DEBUG] Filtrados {filtered_count} archivos de documentación", file=sys.stderr)
+                if ctx:
+                    await ctx.info(f"[Rerank] Filtrados {filtered_count} archivos de documentación")
+
+        # Step 3: Filter configuration files if include_config=False
+        if not include_config:
+            original_count = len(search_results)
+            search_results = [
+                r for r in search_results
+                if not r.file_path.endswith(('.json', '.ini', '.yaml', '.yml', '.toml', '.xml', '.env', '.config'))
+            ]
+            filtered_count = original_count - len(search_results)
+            if filtered_count > 0:
+                print(f"[DEBUG] Filtrados {filtered_count} archivos de configuración", file=sys.stderr)
+                if ctx:
+                    await ctx.info(f"[Rerank] Filtrados {filtered_count} archivos de configuración")
+
+        if not search_results:
+            return f'No se encontraron resultados de código para "{final_query}". Usa include_docs=True o include_config=True para incluir archivos de documentación/configuración.'
+
+        # Step 3: Rerank with JSON Schema structured outputs
+        print(f"[DEBUG] Rerankando con JSON Schema estructurado...", file=sys.stderr)
+
+        if ctx:
+            await ctx.info(f"[Rerank] Rerankando {len(search_results)} resultados con JSON Schema")
+
+        # Convert to TextJudge format
+        text_judge_results = [
+            TextJudgeSearchResult(
                 file_path=r.file_path,
                 code_chunk=r.code_chunk,
                 start_line=r.start_line,
@@ -408,81 +455,72 @@ async def superior_codebase_rerank(
             )
             for r in search_results
         ]
-        
-        # Step 3: Rerank with LLM
-        if ctx:
-            await ctx.info(f"[Rerank] Reordenando {len(judge_results)} resultados con LLM")
 
-        try:
-            reranked, usages = await judge.rerank(query, judge_results)
-        except Exception as e:
-            # FALLBACK LEVEL 1: Devolver respuesta cruda del LLM (sin parsing)
-            if ctx:
-                await ctx.info(f"[Rerank] Judge parsing failed, returning raw LLM response: {str(e)}")
-            else:
-                print(f"[Rerank] Judge parsing failed, returning raw LLM response: {str(e)}", file=sys.stderr)
+        # Rerank with structured outputs
+        summary = await text_judge.rerank_structured(query, text_judge_results)
 
-            # Try to extract raw response from error message or judge's last response
-            raw_response = None
+        print(f"[DEBUG] Resumen estructurado generado: {len(summary.top_files)} archivos, {len(summary.code_fragments)} fragmentos", file=sys.stderr)
 
-            # Method 1: Extract from error message
-            error_msg = str(e)
-            if "Raw response: " in error_msg:
-                raw_response = error_msg.split("Raw response: ", 1)[1]
+        # Format as markdown
+        markdown = f"""# Resultados de búsqueda: {summary.query}
 
-            # Method 2: Check if judge stored the response
-            elif hasattr(judge, '_last_raw_response'):
-                raw_response = judge._last_raw_response
+**Total de archivos:** {summary.total_files}
+**Total de fragmentos:** {summary.total_fragments}
 
-            if raw_response:
-                # FALLBACK LEVEL 1: Return raw LLM response as-is
-                return f"""Query: {query}
-Workspace: {workspace_path}
+## Top {len(summary.top_files)} Archivos (calificación IA)
 
-=== RESPUESTA CRUDA DEL LLM (Parsing falló) ===
+"""
+        for i, file in enumerate(summary.top_files, 1):
+            markdown += f"""### {i}. `{file.file_path}`
+**Relevancia:** {file.relevance}
+**Razón:** {file.reason}
+**Líneas relevantes:** {file.relevant_lines}
 
-{raw_response.strip()}"""
+"""
 
-            # FALLBACK LEVEL 2: Si no hay respuesta cruda, devolver resultados raw de embeddings
-            if ctx:
-                await ctx.info(f"[Rerank] No raw LLM response available, returning raw embedding results")
-            else:
-                print(f"[Rerank] No raw LLM response available, returning raw embedding results", file=sys.stderr)
+        if summary.code_fragments:
+            markdown += f"\n## Fragmentos de Código ({len(summary.code_fragments)} fragmentos)\n\n"
+            for i, frag in enumerate(summary.code_fragments, 1):
+                # Detect language from file extension
+                ext = frag.file_path.split('.')[-1] if '.' in frag.file_path else ''
+                lang_map = {
+                    'ts': 'typescript', 'js': 'javascript', 'py': 'python',
+                    'java': 'java', 'cpp': 'cpp', 'c': 'c', 'go': 'go',
+                    'rs': 'rust', 'rb': 'ruby', 'php': 'php', 'cs': 'csharp'
+                }
+                lang = lang_map.get(ext, '')
 
-            return _format_search_results(query, workspace_path, search_results)
-        
-        # Apply max results limit
-        reranked = reranked[:settings.reranking_max_results]
-        
-        # Step 4: Generate summary if requested
-        summary = None
-        if mode == "summary":
-            if ctx:
-                await ctx.info("[Rerank] Generando resumen")
-            try:
-                summary = await judge.summarize(query, judge_results)
-            except Exception as e:
-                # FALLBACK: Si el summary falla, no incluir summary
-                if ctx:
-                    await ctx.info(f"[Rerank] Summary failed, proceeding without summary: {str(e)}")
-                else:
-                    print(f"[Rerank] Summary failed, proceeding without summary: {str(e)}", file=sys.stderr)
-                summary = None
-        
-        # Format and return results
-        return _format_rerank_results(query, workspace_path, reranked, summary, usages)
+                markdown += f"""### {i}. `{frag.file_path}` (líneas {frag.start_line}-{frag.end_line})
+
+**Explicación:** {frag.explanation}
+
+```{lang}
+{frag.code_snippet}
+```
+
+"""
+
+        if summary.usages:
+            markdown += f"\n## Usages ({len(summary.usages)} invocaciones)\n\n"
+            for usage in summary.usages:
+                markdown += f"- **{usage.function_name}** llamada en `{usage.file_path}:{usage.line_number}`  \n  {usage.context}\n\n"
+
+        markdown += f"\n## Inferencia\n\n{summary.inference}\n"
+
+        # Return formatted markdown
+        return markdown
         
     except ToolError:
         raise
     except Exception as e:
         error_msg = str(e)
         if ctx:
-            await ctx.info(f"[Rerank] Fallback to search results due to: {error_msg}")
+            await ctx.info(f"[Rerank] Error: {error_msg}")
         else:
-            print(f"[Rerank] Fallback to search results due to: {error_msg}", file=sys.stderr)
+            print(f"[Rerank] Error: {error_msg}", file=sys.stderr)
 
-        # Always return search results instead of error
-        return _format_search_results(query, workspace_path, search_results)
+        # Re-raise the exception instead of trying to use potentially undefined variables
+        raise
 
 
 # Entry point for fastmcp CLI

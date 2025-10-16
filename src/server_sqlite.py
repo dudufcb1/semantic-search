@@ -15,9 +15,11 @@ except ImportError:
 try:
     from .config import settings
     from .embedder import Embedder
+    from .chunk_merger import smart_merge_search_results
 except ImportError:
     from config import settings
     from embedder import Embedder
+    from chunk_merger import smart_merge_search_results
 
 
 # Initialize FastMCP server
@@ -35,18 +37,18 @@ embedder = Embedder(
 )
 
 
-def _format_search_results(query: str, workspace_path: str, results: list) -> str:
-    """Formatea los resultados de búsqueda semántica.
+def _format_search_results(query: str, workspace_path: str, merged_results: dict) -> str:
+    """Formatea los resultados de búsqueda semántica fusionados.
 
     Args:
         query: La consulta de búsqueda
         workspace_path: Ruta del workspace
-        results: Lista de tuplas (file_path, code_chunk, start_line, end_line, distance)
+        merged_results: Dict con resultados fusionados por archivo
 
     Returns:
-        String formateado con los resultados
+        String formateado con los resultados (path: chunk)
     """
-    if not results:
+    if not merged_results:
         return f"""# Resultados de búsqueda semántica
 
 **Workspace:** `{workspace_path}`
@@ -59,24 +61,18 @@ No se encontraron resultados.
 
 **Workspace:** `{workspace_path}`
 **Query:** `{query}`
-**Total de resultados:** {len(results)}
+**Archivos encontrados:** {len(merged_results)}
 
 ---
 
 """
 
-    # Agregar cada resultado
-    for idx, (file_path, code_chunk, start_line, end_line, distance) in enumerate(results, 1):
-        # Convertir distancia a score (menor distancia = mayor score)
-        score = 1.0 - distance if distance < 1.0 else 0.0
-
-        output += f"""## {idx}. `{file_path}` (líneas {start_line}-{end_line})
-
-**Score:** {score:.4f}
-**Distancia:** {distance:.4f}
+    # Agregar cada archivo con su contenido fusionado
+    for idx, (file_path, data) in enumerate(merged_results.items(), 1):
+        output += f"""## {idx}. `{file_path}`
 
 ```
-{code_chunk}
+{data['content']}
 ```
 
 ---
@@ -204,16 +200,34 @@ async def semantic_search(
             """
 
             cursor.execute(sql_query, (vector_json, max_results))
-            results = cursor.fetchall()
+            raw_results = cursor.fetchall()
 
-            # Log de éxito
+            # Log de resultados crudos
             if ctx:
-                await ctx.info(f"[Semantic Search] Búsqueda exitosa: {len(results)} resultados")
+                await ctx.info(f"[Semantic Search] Búsqueda exitosa: {len(raw_results)} chunks encontrados")
             else:
-                print(f"[Semantic Search] Búsqueda exitosa: {len(results)} resultados", file=sys.stderr)
+                print(f"[Semantic Search] Búsqueda exitosa: {len(raw_results)} chunks encontrados", file=sys.stderr)
+
+            # Paso 3: Fusionar chunks por archivo usando smart_merge
+            if ctx:
+                await ctx.info(f"[Semantic Search] Fusionando chunks por archivo...")
+            else:
+                print(f"[Semantic Search] Fusionando chunks por archivo...", file=sys.stderr)
+
+            merged_results = smart_merge_search_results(
+                workspace_path=str(workspace),
+                search_results=raw_results,
+                max_files=max_results  # Limitar a max_results archivos únicos
+            )
+
+            # Log de archivos únicos
+            if ctx:
+                await ctx.info(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos")
+            else:
+                print(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos", file=sys.stderr)
 
             # Formatear y retornar resultados
-            return _format_search_results(query, str(workspace), results)
+            return _format_search_results(query, str(workspace), merged_results)
 
         finally:
             # Cerrar cursor y conexión

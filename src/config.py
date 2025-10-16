@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     mcp_codebase_judge_api_key: str
     mcp_codebase_judge_base_url: Optional[str] = None
     mcp_codebase_judge_model_id: str = "gpt-4o-mini"
-    mcp_codebase_judge_max_tokens: int = 1024
+    mcp_codebase_judge_max_tokens: int = 32000
     mcp_codebase_judge_temperature: float = 0.0
     mcp_codebase_judge_system_prompt: Optional[str] = None
 
