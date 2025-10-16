@@ -514,14 +514,13 @@ async def semantic_search(
             print(f"[Semantic Search] Buscando en Qdrant (colección: {collection_name})...", file=sys.stderr)
 
         qdrant = get_qdrant_store()
-        from .config import settings as config_settings
 
         raw_results_qdrant = await qdrant.search(
             vector=vector,
             workspace_path="",  # No usado cuando collection_name está presente
             directory_prefix=None,
-            min_score=config_settings.search_min_score,
-            max_results=config_settings.search_max_results,
+            min_score=settings.search_min_score,
+            max_results=settings.search_max_results,
             collection_name=collection_name
         )
 
