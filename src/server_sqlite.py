@@ -96,7 +96,20 @@ async def semantic_search(
 
     Args:
         workspace_path: Ruta absoluta del workspace (el servidor inferirá .codebase/vectors.db)
-        query: Texto natural a buscar en el código (ej: 'función de autenticación')
+        query: Pregunta en lenguaje natural sobre QUÉ buscas o QUÉ hace el código.
+
+               Ejemplos efectivos:
+                 • "qué procesos automáticos existen"
+                 • "cómo se procesan los datos de usuarios"
+                 • "dónde se almacena la información"
+                 • "implementación del sistema de notificaciones"
+
+               Tips:
+                 • Sé específico: "cómo se validan formularios" > "validación"
+                 • Usa nombres exactos si los conoces: "UserService", "sendEmail"
+                 • Pregunta por funcionalidad, no por archivos
+                 • Combina conceptos: "autenticación y permisos de usuarios"
+
         max_results: Número máximo de resultados a devolver (default: 20)
         ctx: FastMCP context for logging
 
