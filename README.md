@@ -6,6 +6,41 @@ A powerful Model Context Protocol (MCP) server for semantic code search using ve
 
 This MCP server provides **semantic search capabilities** for your codebase. Instead of keyword matching, it understands the *meaning* of your queries and finds the most relevant code, even if it uses different terminology.
 
+**This is the search/query component.** For indexing your codebase, see the companion project: **[codebase-index-cli](https://github.com/dudufcb1/codebase-index-cli)** (Node.js real-time indexer with file watching and git commit tracking).
+
+### How These Projects Work Together
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Your Workflow                                │
+└─────────────────────────────────────────────────────────────────┘
+
+1. INDEX (codebase-index-cli - Node.js)
+   ├─ Watches your codebase for changes
+   ├─ Parses code with tree-sitter (29+ languages)
+   ├─ Creates embeddings with your chosen model
+   ├─ Stores vectors in Qdrant or SQLite
+   ├─ Tracks git commits with LLM analysis
+   └─ Maintains .codebase/state.json with collection info
+
+2. SEARCH (semantic-search - Python MCP Server)
+   ├─ Reads collection info from .codebase/state.json
+   ├─ Queries the indexed vectors (Qdrant or SQLite)
+   ├─ Uses same embedding model for consistency
+   ├─ Returns semantically relevant code
+   └─ Optionally reranks with LLM analysis
+
+3. CONSUME (Your AI Coding Assistant)
+   ├─ Claude Code / Claude Desktop
+   ├─ Cline (VS Code)
+   ├─ Windsurf
+   └─ Any MCP-compatible client
+```
+
+**In short:**
+- **codebase-index-cli** = Indexer (creates the searchable vectors)
+- **semantic-search** = MCP Server (provides search tools to AI assistants)
+
 ### Core Features
 
 1. **Semantic Search** - Natural language queries to find code by intent
@@ -135,10 +170,40 @@ MCP_CODEBASE_QDRANT_API_KEY=optional-api-key
 
 ### Prerequisites
 
+**Before using this MCP server, you MUST index your codebase first.**
+
+#### Step 1: Install and Run the Indexer
+
+Use **[codebase-index-cli](https://github.com/dudufcb1/codebase-index-cli)** to index your codebase:
+
+```bash
+# Install indexer globally
+npm install -g codebase-index-cli
+
+# Navigate to your project
+cd /path/to/your/project
+
+# Index with SQLite (local, portable)
+codesql
+
+# OR index with Qdrant (scalable, remote)
+codebase
+```
+
+The indexer will:
+- Create `.codebase/` directory in your project
+- Generate `state.json` with collection info
+- Parse and embed your code
+- Watch for changes in real-time
+- Track git commits (optional)
+
+#### Step 2: Install This MCP Server
+
+Requirements for the search server:
 - Python 3.10+
-- Qdrant server (for Qdrant mode) OR indexed workspace with SQLite
 - Embedder API access (OpenAI, OpenRouter, local, etc.)
-- LLM API access (for refined results)
+- LLM API access (for refined results - optional)
+- Qdrant server (if using Qdrant mode) OR SQLite database (auto-created by indexer)
 
 ### Setup
 
@@ -303,7 +368,90 @@ Search in a different workspace/codebase.
 }
 ```
 
+## Understanding .codebase/state.json
+
+The indexer (codebase-index-cli) creates a `.codebase/` directory in your project with this structure:
+
+```
+your-project/
+└── .codebase/
+    ├── state.json       # Collection info, indexing status, stats
+    ├── cache.json       # File hashes for change detection
+    └── vectors.db       # SQLite database (if using `codesql` command)
+```
+
+### state.json Format
+
+This file contains critical information that the MCP server reads to find your indexed vectors:
+
+```json
+{
+  "workspacePath": "/absolute/path/to/your/project",
+  "qdrantCollection": "codebase-1d85d0a83c1348b3be",
+  "createdAt": "2025-10-17T10:13:48.454Z",
+  "updatedAt": "2025-10-17T10:39:00.715Z",
+  "indexingStatus": {
+    "state": "watching"
+  },
+  "lastActivity": {
+    "timestamp": "2025-10-17T10:39:00.712Z",
+    "action": "indexed",
+    "filePath": "README.md",
+    "details": {
+      "blockCount": 48
+    }
+  },
+  "qdrantStats": {
+    "totalVectors": 396,
+    "uniqueFiles": 22,
+    "vectorDimension": 1536,
+    "lastUpdated": "2025-10-17T10:30:03.891Z"
+  }
+}
+```
+
+**Key Fields:**
+- `qdrantCollection` - The collection name to use when calling `semantic_search()`
+- `workspacePath` - Absolute path to the indexed project
+- `vectorDimension` - The dimension of the embedding model used (MUST match your MCP server config)
+- `indexingStatus.state` - Current state: `"watching"`, `"indexing"`, `"idle"`, or `"error"`
+- `qdrantStats.totalVectors` - Number of indexed code chunks
+- `qdrantStats.uniqueFiles` - Number of files in the index
+
+### How the MCP Server Uses state.json
+
+When you call `semantic_search()`, the server:
+
+1. Reads `<workspace>/.codebase/state.json`
+2. Extracts `qdrantCollection` (e.g., `"codebase-1d85d0a83c1348b3be"`)
+3. Connects to Qdrant/SQLite using that collection
+4. Performs the semantic search
+5. Returns ranked results
+
+**You don't need to manually create or edit this file** - the indexer manages it automatically.
+
 ## Common Pitfalls
+
+### 0. Indexer Not Running
+
+**Problem:** No `.codebase/state.json` file found or "collection doesn't exist" errors
+
+**Cause:** You haven't indexed your codebase yet
+
+**Solution:**
+```bash
+# Install and run the indexer first
+npm install -g codebase-index-cli
+
+# Navigate to your project
+cd /path/to/your/project
+
+# Run the indexer (choose one)
+codesql        # For SQLite storage
+codebase       # For Qdrant storage
+```
+
+The indexer MUST be running or have completed indexing before you can use this MCP server. See [codebase-index-cli](https://github.com/dudufcb1/codebase-index-cli) for details.
 
 ### 1. Model Mismatch
 
@@ -394,13 +542,41 @@ MCP_CODEBASE_SEARCH_MIN_SCORE=0.1  # Default: 0.4
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
+│                     Complete System                         │
+└─────────────────────────────────────────────────────────────┘
+
+                    ┌─────────────────────┐
+                    │ codebase-index-cli  │
+                    │    (Node.js)        │
+                    │                     │
+                    │ • File Watching     │
+                    │ • Tree-sitter       │
+                    │ • Embedding         │
+                    │ • Git Tracking      │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │  Vector Storage      │
+                    │ ┌────────┬─────────┐ │
+                    │ │ Qdrant │ SQLite  │ │
+                    │ └────────┴─────────┘ │
+                    │                      │
+                    │ .codebase/           │
+                    │ ├─ state.json        │
+                    │ ├─ cache.json        │
+                    │ └─ vectors.db        │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
 │                        MCP Client                           │
 │                  (Claude, Cline, Windsurf)                  │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   MCP Server (FastMCP)                      │
+│              MCP Server (This Project - Python)             │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │  Tools: semantic_search, visit_other_project, etc.   │  │
 │  └──────────────────────────────────────────────────────┘  │
@@ -415,7 +591,7 @@ MCP_CODEBASE_SEARCH_MIN_SCORE=0.1  # Default: 0.4
       │                          │
       ▼                          │
 ┌─────────────────────────────┐  │
-│   Vector Storage            │  │
+│   Query Vector Storage      │  │
 │  ┌─────────┐  ┌──────────┐ │  │
 │  │ Qdrant  │  │  SQLite  │ │  │
 │  │(primary)│  │(fallback)│ │  │
@@ -562,3 +738,6 @@ Built with:
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP framework
 - [Qdrant](https://qdrant.tech/) - Vector database
 - [OpenAI](https://openai.com/) - Embedding & LLM APIs
+
+Companion project:
+- [codebase-index-cli](https://github.com/dudufcb1/codebase-index-cli) - Real-time codebase indexer with file watching and git commit tracking
