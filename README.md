@@ -1,455 +1,564 @@
-# MCP Codebase Search Server (Python + FastMCP)
+# Semantic Codebase Search - MCP Server
 
-Servidor Model Context Protocol que reutiliza el índice semántico existente de Roo Code y expone
-los tools `superior_codebase_search` y `superior_codebase_rerank` vía transporte `stdio`.
+A powerful Model Context Protocol (MCP) server for semantic code search using vector embeddings and LLM-powered reranking.
 
-**Migrado de TypeScript a Python usando FastMCP.**
+## What This Does
 
-## Requisitos
+This MCP server provides **semantic search capabilities** for your codebase. Instead of keyword matching, it understands the *meaning* of your queries and finds the most relevant code, even if it uses different terminology.
+
+### Core Features
+
+1. **Semantic Search** - Natural language queries to find code by intent
+2. **LLM-Powered Reranking** - AI-assisted relevance scoring and filtering
+3. **Git Commit History Search** - Search through analyzed commit history
+4. **Multi-Project Search** - Query other codebases/workspaces
+5. **SQLite & Qdrant Support** - Flexible vector storage backends
+
+## Critical Configuration Requirements
+
+### 1. Embedder Model Consistency
+
+**CRITICAL:** The embedder model used for search **MUST MATCH** the model used for indexing.
+
+```bash
+# Your indexer used this:
+EMBEDDER_MODEL_ID=text-embedding-3-small
+EMBEDDER_DIMENSION=1536
+
+# Your search server MUST use the EXACT same:
+MCP_CODEBASE_EMBEDDER_MODEL_ID=text-embedding-3-small
+MCP_CODEBASE_EMBEDDER_DIMENSION=1536
+```
+
+**Why this matters:**
+- Different models produce incompatible vector spaces
+- Mismatched dimensions will cause search failures
+- Using `text-embedding-3-large` when indexed with `-small` = broken search
+- OpenAI models vs other providers = different vector spaces
+
+**Compatibility Matrix:**
+
+| Indexer Model | Search Model | Compatible? |
+|---------------|--------------|-------------|
+| text-embedding-3-small | text-embedding-3-small | ✅ YES |
+| text-embedding-3-small | text-embedding-3-large | ❌ NO |
+| text-embedding-3-small (1536d) | text-embedding-3-small (512d) | ❌ NO |
+| nomic-embed-text-v1.5 | nomic-embed-text-v1.5 | ✅ YES |
+| OpenAI model | HuggingFace model | ❌ NO |
+
+### 2. LLM for Refined Results
+
+When using `refined_answer=True`, the system uses an **LLM (Judge)** to:
+- Analyze relevance of each code fragment
+- Filter out noise and boilerplate
+- Identify missing imports/references
+- Generate a structured brief summary
+
+**Configuration:**
+
+```bash
+# Judge/LLM settings (for refined results)
+MCP_CODEBASE_JUDGE_PROVIDER=openai-compatible
+MCP_CODEBASE_JUDGE_API_KEY=your-api-key
+MCP_CODEBASE_JUDGE_BASE_URL=https://your-llm-endpoint.com/v1
+MCP_CODEBASE_JUDGE_MODEL_ID=gpt-4o-mini
+MCP_CODEBASE_JUDGE_MAX_TOKENS=32000
+MCP_CODEBASE_JUDGE_TEMPERATURE=0.0
+```
+
+**When NOT to use refined results:**
+- Quick searches where speed matters
+- Budget constraints (LLM calls cost money/tokens)
+- Simple queries with obvious answers
+- When you want raw vector similarity scores
+
+**When TO use refined results:**
+- Complex architectural questions
+- Finding patterns across multiple files
+- Understanding relationships between components
+- When you need contextual explanations
+
+### 3. Vector Storage Backends
+
+#### Qdrant (Primary)
+
+```bash
+MCP_CODEBASE_QDRANT_URL=http://localhost:6333
+MCP_CODEBASE_QDRANT_API_KEY=optional-api-key
+```
+
+- Scalable for large codebases
+- Supports filtering and complex queries
+- Required for commit history search
+- Collection names: auto-generated from workspace path hash
+
+#### SQLite (Alternative)
+
+```bash
+# No config needed - auto-detected at:
+# <workspace>/.codebase/vectors.db
+```
+
+- Good for single-user local development
+- Lower memory footprint
+- Embedded in workspace directory
+- Limitations: No commit history support
+
+### 4. Two Server Modes
+
+#### Mode 1: server_qdrant.py (Qdrant-based)
+
+**Tools:**
+- `semantic_search` - Basic semantic search
+- `visit_other_project` - Search other workspaces
+- `search_commit_history` - Query git history
+
+**Best for:**
+- Multi-project workflows
+- Teams using shared Qdrant instance
+- Git commit analysis
+- Production deployments
+
+#### Mode 2: server_sqlite.py (SQLite-based)
+
+**Tools:**
+- `semantic_search` - Basic semantic search
+- `visit_other_project` - Search other workspaces (SQLite or Qdrant)
+
+**Best for:**
+- Single developer local workflows
+- Offline development
+- Lower resource usage
+- Quick prototyping
+
+## Installation
+
+### Prerequisites
 
 - Python 3.10+
-- `uv` (recomendado) o `pip`
-- Acceso a la carpeta del workspace ya indexado por Roo Code
-- Qdrant accesible con la colección creada por la extensión
-- API key para el proveedor de embeddings compatible con OpenAI
-- API key para el proveedor del Judge (LLM) compatible con OpenAI
+- Qdrant server (for Qdrant mode) OR indexed workspace with SQLite
+- Embedder API access (OpenAI, OpenRouter, local, etc.)
+- LLM API access (for refined results)
 
-## Instalación
+### Setup
 
-1. Clonar el repositorio:
 ```bash
-git clone https://github.com/dudufcb1/llm_codebase_search_python.git
-cd llm_codebase_search_python/python-mcp
-```
+# Clone repository
+git clone <repository-url>
+cd semantic_search
 
-2. Crear entorno virtual e instalar dependencias:
-```bash
+# Create virtual environment
 python3 -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install fastmcp qdrant-client httpx pydantic pydantic-settings python-dotenv
-```
 
-3. Configurar variables de entorno:
-```bash
+# Configure environment
 cp .env.example .env
-# Editar .env con tu configuración
+# Edit .env with your settings
 ```
 
-## Configuración
+### Environment Configuration
 
-Variables de entorno soportadas (crear archivo `.env` en la raíz del proyecto):
+**Minimal configuration:**
 
 ```bash
-# Workspace por defecto (opcional)
-MCP_CODEBASE_WORKSPACE=/ruta/absoluta/al/workspace
-# o
-WORKSPACE_PATH=/ruta/absoluta/al/workspace
-
-# Modo de colección (opcional - default: "default")
-# "default" = calcula colección con hash de workspace_path
-# "codebase-indexer" = requiere qdrantCollection explícito del agente
-MCP_CODEBASE_COLLECTION_SOURCE=default
-
-# Qdrant (requerido)
-MCP_CODEBASE_QDRANT_URL=http://localhost:6333
-# o
-QDRANT_URL=http://localhost:6333
-
-MCP_CODEBASE_QDRANT_API_KEY=tu-api-key-opcional
-# o
-QDRANT_API_KEY=tu-api-key-opcional
-
-# Embedder (requerido)
-MCP_CODEBASE_EMBEDDER_PROVIDER=openai
-# o
-EMBEDDER_PROVIDER=openai
-
-MCP_CODEBASE_EMBEDDER_API_KEY=sk-...
-# o
-EMBEDDER_API_KEY=sk-...
-
+# Embedder (REQUIRED)
+MCP_CODEBASE_EMBEDDER_PROVIDER=openai-compatible
+MCP_CODEBASE_EMBEDDER_API_KEY=your-key
+MCP_CODEBASE_EMBEDDER_BASE_URL=https://api.example.com/v1
 MCP_CODEBASE_EMBEDDER_MODEL_ID=text-embedding-3-small
-# o
-EMBEDDER_MODEL_ID=text-embedding-3-small
+MCP_CODEBASE_EMBEDDER_DIMENSION=1536  # Optional, model default if omitted
 
-# Para proveedores compatibles con OpenAI
-MCP_CODEBASE_EMBEDDER_BASE_URL=https://api.tu-proveedor.com/v1
-# o
-EMBEDDER_BASE_URL=https://api.tu-proveedor.com/v1
+# Qdrant (REQUIRED for server_qdrant.py)
+MCP_CODEBASE_QDRANT_URL=http://localhost:6333
+MCP_CODEBASE_QDRANT_API_KEY=optional-key
 
-# Judge/LLM (requerido)
-MCP_CODEBASE_JUDGE_PROVIDER=openai
-# o
-JUDGE_PROVIDER=openai
-
-MCP_CODEBASE_JUDGE_API_KEY=sk-...
-# o
-JUDGE_API_KEY=sk-...
-
+# Judge/LLM (REQUIRED for refined_answer=True)
+MCP_CODEBASE_JUDGE_PROVIDER=openai-compatible
+MCP_CODEBASE_JUDGE_API_KEY=your-key
+MCP_CODEBASE_JUDGE_BASE_URL=https://api.example.com/v1
 MCP_CODEBASE_JUDGE_MODEL_ID=gpt-4o-mini
-# o
-JUDGE_MODEL_ID=gpt-4o-mini
-
-MCP_CODEBASE_JUDGE_MAX_TOKENS=1024
-# o
-JUDGE_MAX_TOKENS=1024
-
-MCP_CODEBASE_JUDGE_TEMPERATURE=0
-# o
-JUDGE_TEMPERATURE=0
-
-# Para proveedores compatibles con OpenAI
-MCP_CODEBASE_JUDGE_BASE_URL=https://api.tu-proveedor.com/v1
-# o
-JUDGE_BASE_URL=https://api.tu-proveedor.com/v1
-
-# Reranking (opcional)
-MCP_CODEBASE_RERANKING_MAX_RESULTS=10
-# o
-RERANKING_MAX_RESULTS=10
-
-MCP_CODEBASE_RERANKING_INCLUDE_REASON=true
-# o
-RERANKING_INCLUDE_REASON=true
-
-MCP_CODEBASE_RERANKING_SUMMARIZE=false
-# o
-RERANKING_SUMMARIZE=false
-
-# Search (opcional)
-MCP_CODEBASE_SEARCH_MIN_SCORE=0.4
-# o
-SEARCH_MIN_SCORE=0.4
-
-MCP_CODEBASE_SEARCH_MAX_RESULTS=20
-# o
-SEARCH_MAX_RESULTS=20
+MCP_CODEBASE_JUDGE_MAX_TOKENS=32000
+MCP_CODEBASE_JUDGE_TEMPERATURE=0.0
 ```
 
-## Integración con Claude Desktop
+### MCP Client Configuration
 
-Este proyecto ofrece **DOS servidores MCP** para diferentes casos de uso:
-
-### Servidor 1: `server.py` (DEFAULT MODE)
-
-**Uso:** Para IDEs/clientes que NO usan `code-index-cli` y calculan el nombre de colección automáticamente usando hash SHA256 del workspace path.
-
-**Tools disponibles:**
-- `superior_codebase_search` - Búsqueda semántica simple
-- `superior_codebase_rerank` - Búsqueda con reordenamiento LLM
-
-**Configuración JSON (Claude Desktop):**
+**Claude Desktop** (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "codebase-search": {
-      "command": "/ruta/absoluta/a/python-mcp/venv/bin/python",
-      "args": [
-        "/ruta/absoluta/a/python-mcp/src/server.py"
-      ],
-      "alwaysAllow": [
-        "superior_codebase_search",
-        "superior_codebase_rerank"
-      ]
+    "semantic-search": {
+      "command": "/absolute/path/to/semantic_search/venv/bin/python",
+      "args": ["/absolute/path/to/semantic_search/src/server_qdrant.py"],
+      "env": {
+        "MCP_CODEBASE_EMBEDDER_PROVIDER": "openai-compatible",
+        "MCP_CODEBASE_EMBEDDER_API_KEY": "your-key",
+        "MCP_CODEBASE_EMBEDDER_BASE_URL": "https://api.example.com/v1",
+        "MCP_CODEBASE_EMBEDDER_MODEL_ID": "text-embedding-3-small",
+        "MCP_CODEBASE_QDRANT_URL": "http://localhost:6333"
+      }
     }
   }
 }
 ```
 
-**Ejemplo real:**
-```json
-{
-  "mcpServers": {
-    "codebase-search": {
-      "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python",
-      "args": [
-        "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server.py"
-      ],
-      "alwaysAllow": [
-        "superior_codebase_search",
-        "superior_codebase_rerank"
-      ]
-    }
-  }
-}
-```
-
-### Servidor 2: `server_local.py` (LOCAL MODE - code-index-cli compatible)
-
-**Uso:** Para clientes que usan `code-index-cli` para indexar y mantener el índice actualizado en tiempo real. El nombre de colección se lee desde `.codebase/state.json`.
-
-**Tools disponibles:**
-- `superior_codebase_rerank` - SOLO rerank (requiere `qdrantCollection` explícito)
-
-**Configuración JSON (Claude Desktop):**
-
-```json
-{
-  "mcpServers": {
-    "codebase-search-local": {
-      "command": "/ruta/absoluta/a/python-mcp/venv/bin/python",
-      "args": [
-        "/ruta/absoluta/a/python-mcp/src/server_local.py"
-      ],
-      "alwaysAllow": [
-        "superior_codebase_rerank"
-      ]
-    }
-  }
-}
-```
-
-**Ejemplo real:**
-```json
-{
-  "mcpServers": {
-    "codebase-search-local": {
-      "command": "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python",
-      "args": [
-        "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server_local.py"
-      ],
-      "alwaysAllow": [
-        "superior_codebase_rerank"
-      ]
-    }
-  }
-}
-```
-
-### Configuración TOML (Cline, Roo Coder, etc.)
-
-**Servidor DEFAULT (`server.py`):**
+**Cline/Windsurf** (`.mcp.toml`):
 
 ```toml
-[mcp_servers.codebase-search]
+[mcp_servers.semantic-search]
 type = "stdio"
-command = "/ruta/absoluta/a/python-mcp/venv/bin/python"
-args = ["/ruta/absoluta/a/python-mcp/src/server.py"]
+command = "/absolute/path/to/semantic_search/venv/bin/python"
+args = ["/absolute/path/to/semantic_search/src/server_qdrant.py"]
 timeout = 3600
+
+[mcp_servers.semantic-search.env]
+MCP_CODEBASE_EMBEDDER_PROVIDER = "openai-compatible"
+MCP_CODEBASE_EMBEDDER_API_KEY = "your-key"
+MCP_CODEBASE_EMBEDDER_BASE_URL = "https://api.example.com/v1"
+MCP_CODEBASE_EMBEDDER_MODEL_ID = "text-embedding-3-small"
+MCP_CODEBASE_QDRANT_URL = "http://localhost:6333"
 ```
 
-**Ejemplo real:**
-```toml
-[mcp_servers.codebase-search]
-type = "stdio"
-command = "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python"
-args = ["/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server.py"]
-timeout = 3600
-```
+## Tools Reference
 
-**Servidor LOCAL (`server_local.py`):**
+### semantic_search
 
-```toml
-[mcp_servers.codebase-search-local]
-type = "stdio"
-command = "/ruta/absoluta/a/python-mcp/venv/bin/python"
-args = ["/ruta/absoluta/a/python-mcp/src/server_local.py"]
-timeout = 3600
-```
+Basic semantic code search.
 
-**Ejemplo real:**
-```toml
-[mcp_servers.codebase-search-local]
-type = "stdio"
-command = "/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/venv/bin/python"
-args = ["/media/eduardo/56087475087455C9/Dev/llm_codebase_search/python-mcp/src/server_local.py"]
-timeout = 3600
-```
+**Parameters:**
+- `query` (string, required) - Natural language query
+- `qdrant_collection` (string, required) - Collection name from `.codebase/state.json`
+- `max_results` (int, optional) - Max results to return (default: 20)
+- `refined_answer` (bool, optional) - Use LLM analysis (default: false)
 
-**Nota:** Cambia las rutas a la ubicación donde clonaste el repositorio.
+**Example:**
 
-O usando el script de inicio (más robusto):
-
-```json
+```python
 {
-  "mcpServers": {
-    "codebase-search": {
-      "command": "/ruta/completa/a/python-mcp/start.sh",
-      "args": [],
-      "cwd": "/ruta/completa/a/python-mcp",
-      "alwaysAllow": ["superior_codebase_search", "superior_codebase_rerank"]
-    }
-  }
+  "query": "authentication middleware implementation",
+  "qdrant_collection": "codebase-7a1480dc62504bc490",
+  "max_results": 15,
+  "refined_answer": true
 }
 ```
 
-**Nota:** Asegúrate de que `uv` esté instalado y en el PATH del sistema. Si tienes problemas, usa el script `start.sh`.
+**Returns:**
+- Without `refined_answer`: Ranked code fragments with similarity scores
+- With `refined_answer`: AI-analyzed brief + ranked relevant files + noise detection
 
-## Tools disponibles
+### search_commit_history
 
-### Servidor DEFAULT (`server.py`)
+Search through git commit history that has been indexed and analyzed by LLM.
 
-#### `superior_codebase_search`
+**Parameters:**
+- `query` (string, required) - What to search for in commit history
+- `qdrant_collection` (string, required) - Collection name
+- `max_results` (int, optional) - Max commits to return (default: 10)
 
-Búsqueda semántica en código indexado.
+**Example:**
 
-**Parámetros:**
-- `query` (string, obligatorio): Texto natural a buscar
-- `workspacePath` (string, opcional): Ruta absoluta del workspace
-- `path` (string, opcional): Prefijo de ruta para filtrar resultados
-
-**Ejemplo:**
-```json
+```python
 {
-  "query": "función de autenticación",
-  "workspacePath": "/home/user/my-project",
-  "path": "src/auth"
+  "query": "when was SQLite storage implemented",
+  "qdrant_collection": "codebase-7a1480dc62504bc490",
+  "max_results": 5
 }
 ```
 
-#### `superior_codebase_rerank`
+**Requirements:**
+- Git tracking must be enabled during indexing
+- Commits must have been analyzed by LLM
+- Qdrant backend required (not available with SQLite)
 
-Búsqueda semántica con reordenamiento inteligente usando LLM.
+### visit_other_project
 
-**Parámetros:**
-- `query` (string, obligatorio): Texto natural a buscar
-- `workspacePath` (string, obligatorio): Ruta absoluta del workspace
-- `path` (string, opcional): Prefijo de ruta para filtrar resultados
-- `mode` (string, opcional): "rerank" (default) o "summary"
+Search in a different workspace/codebase.
 
-**Ejemplo:**
-```json
+**Parameters:**
+- `query` (string, required) - Search query
+- `workspace_path` (string, optional) - Absolute path to workspace
+- `qdrant_collection` (string, optional) - Explicit collection name
+- `storage_type` (string, optional) - "sqlite" or "qdrant" (default: "qdrant")
+- `refined_answer` (bool, optional) - Use LLM analysis (default: false)
+- `max_results` (int, optional) - Max results (default: 20)
+
+**Resolution logic:**
+1. If `qdrant_collection` specified → use Qdrant with that collection
+2. If `storage_type="sqlite"` + `workspace_path` → try SQLite at `<workspace>/.codebase/vectors.db`
+3. If SQLite not found → fallback to Qdrant (calculate collection from workspace_path)
+4. If `storage_type="qdrant"` → calculate collection from workspace_path
+
+**Example:**
+
+```python
 {
-  "query": "manejo de errores",
-  "workspacePath": "/home/user/my-project",
-  "mode": "summary"
+  "query": "payment processing flow",
+  "workspace_path": "/home/user/other-project",
+  "storage_type": "sqlite",
+  "refined_answer": true
 }
 ```
 
-### Servidor LOCAL (`server_local.py`)
+## Common Pitfalls
 
-#### `superior_codebase_rerank`
+### 1. Model Mismatch
 
-Búsqueda semántica con reordenamiento inteligente usando LLM. **Requiere colección explícita desde `.codebase/state.json`.**
+**Problem:** Search returns irrelevant results or errors
 
-**Parámetros:**
-- `query` (string, obligatorio): Texto natural a buscar
-- `qdrantCollection` (string, obligatorio): Nombre de colección Qdrant desde `.codebase/state.json`
-- `path` (string, opcional): Prefijo de ruta para filtrar resultados
-- `mode` (string, opcional): "rerank" (default) o "summary"
+**Cause:** Embedder model doesn't match indexing model
 
-**Ejemplo:**
-```json
-{
-  "query": "authentication logic",
-  "qdrantCollection": "codebase-f93e99958acc444e"
-}
+**Solution:**
+```bash
+# Check your indexer config
+cat .codebase/config.json
+
+# Match these settings exactly:
+MCP_CODEBASE_EMBEDDER_MODEL_ID=<same-as-indexer>
+MCP_CODEBASE_EMBEDDER_DIMENSION=<same-as-indexer>
 ```
 
-**Workflow del agente:**
-1. Leer `.codebase/state.json` del workspace
-2. Extraer el campo `qdrantCollection`
-3. Pasar ese valor en el tool call
+### 2. Missing LLM Config
 
-## Estructura del Proyecto
+**Problem:** `refined_answer=True` fails with authentication errors
+
+**Cause:** Judge/LLM credentials not configured
+
+**Solution:**
+```bash
+# Configure LLM for refined results
+MCP_CODEBASE_JUDGE_API_KEY=your-llm-api-key
+MCP_CODEBASE_JUDGE_BASE_URL=https://your-llm-endpoint/v1
+```
+
+### 3. Empty Search Results
+
+**Problem:** No results returned for valid queries
+
+**Causes:**
+- Workspace not indexed yet
+- Wrong collection name
+- Qdrant server not running
+- Score threshold too high
+
+**Solutions:**
+```bash
+# Verify collection exists
+curl http://localhost:6333/collections
+
+# Check state file for correct collection name
+cat <workspace>/.codebase/state.json
+
+# Lower score threshold
+MCP_CODEBASE_SEARCH_MIN_SCORE=0.1  # Default: 0.4
+```
+
+### 4. Commit History Not Working
+
+**Problem:** `search_commit_history` returns no results
+
+**Causes:**
+- Git tracking not enabled during indexing
+- Using SQLite backend (not supported)
+- No commits analyzed yet
+
+**Solution:**
+- Ensure Qdrant backend is used
+- Enable git tracking in indexer
+- Wait for commits to be analyzed and indexed
+
+## Performance Considerations
+
+### Search Speed
+
+- **Basic search:** ~100-500ms (depends on collection size)
+- **With refined_answer:** +2-10s (LLM processing overhead)
+- **Commit history:** ~200-800ms (filtered search)
+
+### Token Usage (with refined_answer=True)
+
+- **Input tokens:** ~2000-8000 per search (depends on result count)
+- **Output tokens:** ~500-3000 (depends on complexity)
+- **Cost estimate:** $0.01-0.05 per refined search (varies by LLM provider)
+
+### Memory Usage
+
+- **Qdrant mode:** ~50-200MB (depends on client connections)
+- **SQLite mode:** ~20-100MB (embedded database)
+- **Peak during search:** +100-300MB (vector operations)
+
+## Architecture Overview
 
 ```
-python-mcp/
-├── fastmcp.json          # Configuración FastMCP
-├── pyproject.toml        # Dependencias Python
-├── README.md             # Este archivo
-├── .env                  # Variables de entorno (no versionado)
+┌─────────────────────────────────────────────────────────────┐
+│                        MCP Client                           │
+│                  (Claude, Cline, Windsurf)                  │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   MCP Server (FastMCP)                      │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  Tools: semantic_search, visit_other_project, etc.   │  │
+│  └──────────────────────────────────────────────────────┘  │
+└─────┬─────────────────────────┬─────────────────────────────┘
+      │                         │
+      ▼                         ▼
+┌─────────────┐         ┌──────────────────┐
+│  Embedder   │         │  Judge (LLM)     │
+│  (OpenAI/   │         │  (for refined    │
+│   compatible)│         │   results)       │
+└─────┬───────┘         └────────┬─────────┘
+      │                          │
+      ▼                          │
+┌─────────────────────────────┐  │
+│   Vector Storage            │  │
+│  ┌─────────┐  ┌──────────┐ │  │
+│  │ Qdrant  │  │  SQLite  │ │  │
+│  │(primary)│  │(fallback)│ │  │
+│  └─────────┘  └──────────┘ │  │
+└─────────────────────────────┘  │
+                                 │
+┌────────────────────────────────▼──┐
+│     Analysis & Reranking          │
+│  - Relevance scoring              │
+│  - Noise filtering                │
+│  - Contextual explanations        │
+└───────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+semantic_search/
 ├── src/
-│   ├── server.py         # Servidor DEFAULT (hash automático)
-│   ├── server_local.py   # Servidor LOCAL (code-index-cli compatible)
-│   ├── config.py         # Configuración con Pydantic
-│   ├── embedder.py       # Cliente de embeddings
-│   ├── judge.py          # Cliente LLM para reranking
-│   └── qdrant_store.py   # Cliente Qdrant
+│   ├── server_qdrant.py       # Qdrant-based MCP server
+│   ├── server_sqlite.py       # SQLite-based MCP server
+│   ├── config.py              # Configuration management (Pydantic)
+│   ├── embedder.py            # Embedding client (OpenAI-compatible)
+│   ├── judge.py               # LLM client for reranking (text-based)
+│   ├── text_judge.py          # LLM client (JSON Schema structured)
+│   └── qdrant_store.py        # Qdrant vector store client
+├── tests/
+│   ├── test_all_tools.py      # Integration tests
+│   ├── test_search.py         # Basic search tests
+│   └── test_structured_output.py  # Structured output tests
+├── .env.example               # Environment template
+├── pyproject.toml             # Python dependencies
+└── README.md                  # Documentation (Spanish)
 ```
 
-## Diferencias con la versión TypeScript
+## Development
 
-- ✅ Mismo comportamiento funcional
-- ✅ Mismas variables de entorno
-- ✅ Mismos tools y parámetros
-- ✅ Async/await nativo en Python
-- ✅ Gestión de dependencias con `uv`
-- ✅ Configuración declarativa con `fastmcp.json`
-- ✅ Mejor manejo de errores con `ToolError`
-
-## Compatibilidad con code-index-cli
-
-Este servidor MCP puede operar en dos modos según la variable de entorno `MCP_CODEBASE_COLLECTION_SOURCE`:
-
-### Modo 1: `default` (por defecto)
-
-El servidor calcula automáticamente el nombre de colección usando SHA256 de la ruta del workspace.
-
-**Configuración (.env):**
-```bash
-MCP_CODEBASE_COLLECTION_SOURCE=default  # o simplemente omitir esta variable
-```
-
-**Uso de los tools:**
-```json
-{
-  "query": "authentication logic",
-  "workspacePath": "/home/user/my-project"
-}
-```
-
-El servidor automáticamente:
-1. Normaliza la ruta del workspace
-2. Calcula SHA256 de la ruta
-3. Genera nombre de colección: `ws-{hash[:16]}`
-
-### Modo 2: `codebase-indexer`
-
-Compatible con [code-index-cli](https://github.com/tu-repo/code-index-cli) que mantiene el índice actualizado en tiempo real.
-
-**Configuración (.env):**
-```bash
-MCP_CODEBASE_COLLECTION_SOURCE=codebase-indexer
-```
-
-**Uso de los tools:**
-
-El agente debe leer el archivo `.codebase/state.json` del workspace y pasar el `qdrantCollection`:
-
-1. **Localizar:** `<workspace>/.codebase/state.json`
-2. **Leer el contenido:**
-```json
-{
-  "workspacePath": "/home/user/my-project",
-  "qdrantCollection": "codebase-f93e99958acc444e",
-  "createdAt": "2025-10-13T08:09:19.732Z",
-  "updatedAt": "2025-10-13T20:08:42.023Z"
-}
-```
-3. **Pasar el `qdrantCollection` en el tool call:**
-```json
-{
-  "query": "authentication logic",
-  "qdrantCollection": "codebase-f93e99958acc444e"
-}
-```
-
-**¿Por qué este modo?**
-- `code-index-cli` corre en una pestaña separada de Claude Code/Codex manteniendo el índice actualizado
-- Tu IDE usa este MCP para buscar en el índice en tiempo real
-- No necesitas mantener dos índices separados
-- El nombre de colección es generado una vez por `code-index-cli` (UUID random) y guardado en `.codebase/state.json`
-
-**Importante:**
-- En modo `codebase-indexer`, el parámetro `workspacePath` se ignora
-- El parámetro `qdrantCollection` es **obligatorio** en este modo
-- Si no se proporciona `qdrantCollection`, el servidor retorna un error instructivo
-
-## Desarrollo
-
-### Ejecutar tests
+### Run Tests
 
 ```bash
-cd python-mcp
+# Activate virtual environment
+source venv/bin/activate
+
+# Run all tests
 pytest
+
+# Run specific test
+python tests/test_search.py
 ```
 
-### Verificar configuración
+### Verify Configuration
 
 ```bash
-cd python-mcp
 python -c "from src.config import settings; print(settings.model_dump())"
 ```
 
+### Debug Mode
+
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+
+# Run server
+python src/server_qdrant.py
+```
+
+## Troubleshooting
+
+### Connection Errors
+
+```bash
+# Test Qdrant connection
+curl http://localhost:6333/healthz
+
+# Test embedder endpoint
+curl https://your-api.com/v1/models \
+  -H "Authorization: Bearer your-key"
+```
+
+### Index Issues
+
+```bash
+# Verify collection exists
+curl http://localhost:6333/collections/<collection-name>
+
+# Check vector count
+curl http://localhost:6333/collections/<collection-name>/points/count
+```
+
+### MCP Server Logs
+
+Check MCP client logs for server stderr:
+- Claude Desktop: `~/Library/Logs/Claude/mcp*.log`
+- Cline: VS Code output panel
+- Windsurf: Check debug console
+
+## License
+
+MIT
+
+## Contributing
+
+This project is designed to be **feature-complete** for its intended use case. The current implementation provides everything needed for semantic codebase search with LLM-powered analysis.
+
+### Philosophy
+
+**What's built is what's needed.** The architecture, tools, and features have been carefully designed to solve the core problem: semantic code search with intelligent ranking.
+
+### We Welcome
+
+- **Bug reports** - If something doesn't work as documented
+- **Documentation improvements** - Clarifications, fixes, translations
+- **Performance optimizations** - Measurable improvements without breaking changes
+- **Critical missing features** - Only if they benefit the majority of users
+
+### We Generally Don't Accept
+
+- **Personal preference changes** - Configuration options for edge cases
+- **Alternative implementations** - Different ways to do the same thing
+- **Feature creep** - Adding complexity for niche use cases
+
+### If You Need Something Different
+
+**Fork it!** If you need features specific to your workflow:
+
+1. Fork this repository
+2. Create your own flavor
+3. Share it with the community
+
+This approach keeps the core project focused while allowing experimentation and customization.
+
+### How to Contribute
+
+1. **Open an issue first** - Discuss the problem/improvement before coding
+2. **Keep it simple** - Follow existing patterns and style
+3. **Test thoroughly** - Include tests for new functionality
+4. **Document clearly** - Update README if behavior changes
+
+**Pull requests without prior discussion will likely be closed.**
+
+## Credits
+
+Built with:
+- [FastMCP](https://github.com/jlowin/fastmcp) - MCP framework
+- [Qdrant](https://qdrant.tech/) - Vector database
+- [OpenAI](https://openai.com/) - Embedding & LLM APIs
