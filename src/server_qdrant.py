@@ -395,8 +395,7 @@ Archivos encontrados: {len(merged_results)}
 @mcp.tool
 async def semantic_search(
     query: str,
-    qdrant_collection: Optional[str] = None,
-    workspace_path: Optional[str] = None,
+    qdrant_collection: str,
     max_results: int = 20,
     refined_answer: bool = False,
     ctx: Context = None
@@ -404,11 +403,10 @@ async def semantic_search(
     """Realiza búsqueda semántica en Qdrant.
 
     Esta herramienta:
-    1. Obtiene la colección Qdrant (desde parámetro o leyendo .codebase/state.json)
-    2. Crea un embedding de la query usando el mismo modelo que indexó el código
-    3. Busca los vectores más similares en Qdrant
-    4. Devuelve los resultados con score y código correspondiente
-    5. Opcionalmente genera un brief con análisis de relevancia usando LLM
+    1. Crea un embedding de la query usando el mismo modelo que indexó el código
+    2. Busca los vectores más similares en Qdrant
+    3. Devuelve los resultados con score y código correspondiente
+    4. Opcionalmente genera un brief con análisis de relevancia usando LLM
 
     Args:
         query: Pregunta en lenguaje natural sobre QUÉ buscas o QUÉ hace el código.
@@ -425,11 +423,7 @@ async def semantic_search(
                  • Pregunta por funcionalidad, no por archivos
                  • Combina conceptos: "autenticación y permisos de usuarios"
 
-        qdrant_collection: Nombre de la colección Qdrant (ej: "codebase-abc123").
-                          Si se proporciona, se usa directamente.
-                          Si no se proporciona, se lee desde workspace_path/.codebase/state.json
-        workspace_path: Ruta absoluta del workspace (solo requerido si qdrant_collection no se proporciona).
-                       El servidor leerá .codebase/state.json para obtener la colección.
+        qdrant_collection: Nombre de la colección Qdrant (ej: "codebase-abc123"). REQUERIDO.
         max_results: Número máximo de resultados a devolver (default: 20)
         refined_answer: Si True, genera un brief con análisis de relevancia usando LLM.
                        El brief identifica archivos relevantes, ruido/boilerplate, y gaps
@@ -447,57 +441,15 @@ async def semantic_search(
         if not query or not query.strip():
             raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
 
-        # Determinar colección Qdrant
-        collection_name = None
-        workspace = None
+        if not qdrant_collection or not qdrant_collection.strip():
+            raise ToolError("El parámetro 'qdrant_collection' es requerido y no puede estar vacío.")
 
-        if qdrant_collection:
-            # Usar colección explícita
-            collection_name = qdrant_collection.strip()
-            if ctx:
-                await ctx.info(f"[Semantic Search] Usando colección explícita: {collection_name}")
-            else:
-                print(f"[Semantic Search] Usando colección explícita: {collection_name}", file=sys.stderr)
-        elif workspace_path:
-            # Leer colección desde state.json
-            if not workspace_path.strip():
-                raise ToolError("El parámetro 'workspace_path' no puede estar vacío.")
-
-            workspace = Path(workspace_path.strip()).resolve()
-
-            # Verificar que el workspace existe
-            if not workspace.exists():
-                raise ToolError(f"El workspace no existe: {workspace}")
-
-            if not workspace.is_dir():
-                raise ToolError(f"El workspace no es un directorio: {workspace}")
-
-            # Leer state.json para obtener colección Qdrant
-            if ctx:
-                await ctx.info(f"[Semantic Search] Leyendo .codebase/state.json...")
-            else:
-                print(f"[Semantic Search] Leyendo .codebase/state.json...", file=sys.stderr)
-
-            state = _load_state_json(str(workspace))
-            collection_name = state["qdrantCollection"]
-        else:
-            raise ToolError(
-                "Debes proporcionar 'qdrant_collection' o 'workspace_path'.\n\n"
-                "Ejemplos:\n"
-                "  • semantic_search(query='...', qdrant_collection='codebase-abc123')\n"
-                "  • semantic_search(query='...', workspace_path='/path/to/project')"
-            )
+        collection_name = qdrant_collection.strip()
 
         if ctx:
-            await ctx.info(f"[Semantic Search] Colección Qdrant: {collection_name}")
+            await ctx.info(f"[Semantic Search] Colección: {collection_name}, Query: {query}")
         else:
-            print(f"[Semantic Search] Colección Qdrant: {collection_name}", file=sys.stderr)
-
-        # Log de inicio
-        if ctx:
-            await ctx.info(f"[Semantic Search] Workspace: {workspace_path}, Query: {query}")
-        else:
-            print(f"[Semantic Search] Workspace: {workspace_path}, Query: {query}", file=sys.stderr)
+            print(f"[Semantic Search] Colección: {collection_name}, Query: {query}", file=sys.stderr)
 
         # Paso 1: Crear embedding de la query
         if ctx:
@@ -554,11 +506,8 @@ async def semantic_search(
             for r in raw_results
         ]
 
-        # Determinar workspace_path para merge (puede ser None si solo se pasó qdrant_collection)
-        merge_workspace_path = str(workspace) if workspace else ""
-
         merged_results = smart_merge_search_results(
-            workspace_path=merge_workspace_path,
+            workspace_path="",  # No workspace path available, merge without file validation
             search_results=raw_results_tuples,
             max_files=max_results  # Limitar a max_results archivos únicos
         )
@@ -580,7 +529,7 @@ async def semantic_search(
             refined_brief = await _generate_refined_brief(query, merged_results, ctx)
 
         # Formatear y retornar resultados
-        display_workspace = str(workspace) if workspace else f"colección '{collection_name}'"
+        display_workspace = f"colección '{collection_name}'"
         return _format_search_results(query, display_workspace, merged_results, refined_brief)
 
     except ToolError:
@@ -825,6 +774,171 @@ Archivos encontrados: {len(merged_results)}
             await ctx.error(f"[Visit Other Project] {error_msg}")
         else:
             print(f"[Visit Other Project] {error_msg}", file=sys.stderr)
+        raise ToolError(error_msg)
+
+
+@mcp.tool
+async def search_commit_history(
+    query: str,
+    qdrant_collection: str,
+    max_results: int = 10,
+    ctx: Context = None
+) -> str:
+    """Search git commit history analyzed by LLM to find similar implementations, past decisions, and patterns.
+
+    This tool provides historical context by searching through commits that have been:
+    - Indexed with their metadata (author, date, message, changed files)
+    - Analyzed and summarized by an LLM for semantic understanding
+    - Stored with embeddings for semantic retrieval
+
+    Use this to:
+    - Find similar feature implementations from the past
+    - Understand why a change was made (commit rationale)
+    - Discover established patterns and conventions
+    - Debug regressions by finding when something changed
+    - Preserve and access institutional knowledge
+
+    Examples:
+        "feature flag implementation similar to checkoutFlowEnabled"
+        "why did we bootstrap the Payment Class"
+        "when did we add null checks to this parameter"
+        "previous refactorings of the authentication system"
+
+    Args:
+        query: Natural language description of what you're looking for in commit history
+        qdrant_collection: Qdrant collection name (e.g., "codebase-abc123"). REQUERIDO.
+        max_results: Maximum number of commits to return (default: 10)
+        ctx: FastMCP context for logging
+
+    Returns:
+        Formatted commit results with metadata, changed files, and LLM analysis
+
+    Raises:
+        ToolError: If validation or execution fails
+    """
+    try:
+        # Validar parámetros
+        if not query or not query.strip():
+            raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
+
+        if not qdrant_collection or not qdrant_collection.strip():
+            raise ToolError("El parámetro 'qdrant_collection' es requerido y no puede estar vacío.")
+
+        collection_name = qdrant_collection.strip()
+
+        if ctx:
+            await ctx.info(f"[Commit History] Colección: {collection_name}, Query: {query}")
+
+        # Paso 1: Crear embedding
+        embedder = get_embedder()
+        vector = await embedder.create_embedding(query)
+
+        if ctx:
+            await ctx.info(f"[Commit History] Embedding creado: {len(vector)} dims")
+
+        # Paso 2: Buscar en Qdrant con filtro de tipo git-commit-analysis
+        qdrant = get_qdrant_store()
+
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        search_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="type",
+                    match=MatchValue(value="git-commit-analysis")
+                )
+            ]
+        )
+
+        if ctx:
+            await ctx.info(f"[Commit History] Buscando commits en Qdrant...")
+
+        results = await qdrant.client.search(
+            collection_name=collection_name,
+            query_vector=vector,
+            limit=max_results,
+            query_filter=search_filter,
+            with_payload=True
+        )
+
+        if not results:
+            return f"""Git Commit History Search
+
+Collection: {collection_name}
+Query: {query}
+
+No commits found matching your query.
+
+This could mean:
+- No commits have been indexed yet (check TRACK_GIT setting)
+- No commits match the semantic query
+- The collection doesn't have git commit tracking enabled
+"""
+
+        # Paso 3: Formatear resultados
+        output = f"""Git Commit History Search
+
+Collection: {collection_name}
+Query: {query}
+Commits found: {len(results)}
+
+{'=' * 80}
+
+"""
+
+        for idx, result in enumerate(results, 1):
+            payload = result.payload
+            score = result.score
+
+            commit_hash = payload.get('commitHash', 'unknown')[:7]
+            branch = payload.get('branch', 'unknown')
+            author = payload.get('author', 'unknown')
+            date = payload.get('date', 'unknown')
+            message = payload.get('message', '')
+            files_changed = payload.get('filesChanged', 0)
+            insertions = payload.get('insertions', 0)
+            deletions = payload.get('deletions', 0)
+            changed_paths = payload.get('changedFilePaths', [])
+            analysis = payload.get('analysis', '')
+
+            output += f"""{idx}. Commit {commit_hash} (similarity: {score * 100:.1f}%)
+
+   Branch: {branch}
+   Author: {author}
+   Date: {date}
+   Changes: {files_changed} files (+{insertions}/-{deletions})
+
+   📝 Message:
+"""
+            for line in message.split('\n'):
+                output += f"      {line}\n"
+
+            output += f"\n   📁 Changed Files:\n"
+            files_to_show = changed_paths[:5] if isinstance(changed_paths, list) else []
+            for file_path in files_to_show:
+                output += f"      • {file_path}\n"
+            if len(changed_paths) > 5:
+                output += f"      ... and {len(changed_paths) - 5} more files\n"
+
+            output += f"\n   🤖 LLM Analysis:\n"
+            for line in analysis.split('\n'):
+                if line.strip():
+                    output += f"      {line}\n"
+
+            output += f"\n{'=' * 80}\n\n"
+
+        if ctx:
+            await ctx.info(f"[Commit History] Retornando {len(results)} commits")
+
+        return output
+
+    except ToolError:
+        raise
+
+    except Exception as e:
+        error_msg = f"Error inesperado: {str(e)}"
+        if ctx:
+            await ctx.error(f"[Commit History] {error_msg}")
         raise ToolError(error_msg)
 
 
