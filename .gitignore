@@ -52,3 +52,5 @@ htmlcov/
 # Logs
 *.log
 
+# Codebase indexing
+.codebase/
