@@ -1,0 +1,10 @@
+# Core runtime deps
+fastmcp
+httpx
+pydantic>=2
+pydantic-settings>=2
+qdrant-client
+voyageai
+
+# Optional: enable SQLite vector backend
+# sqlite-vec

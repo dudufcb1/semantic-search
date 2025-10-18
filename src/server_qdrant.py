@@ -23,7 +23,7 @@ from qdrant_store import QdrantStore
 
 @dataclass
 class SearchResult:
-    """Search result from SQLite vector store."""
+    """Search result from Qdrant vector store."""
     file_path: str
     code_chunk: str
     start_line: int
@@ -562,8 +562,6 @@ async def visit_other_project(
     Esta herramienta permite realizar búsquedas semánticas en proyectos remotos o diferentes
     al actual, útil para buscar patrones en proyectos relacionados o diferentes codebases.
 
-    Soporta tanto SQLite (.codebase/vectors.db) como Qdrant para almacenamiento de vectores.
-
     IMPORTANTE: Esta herramienta es SOLO para exploración. NO debes modificar archivos
     del proyecto visitado, solo explorar y entender el código.
 
@@ -572,20 +570,15 @@ async def visit_other_project(
     1. Si `qdrant_collection` está especificado:
        → Usar Qdrant con esa colección (prioridad máxima)
 
-    2. Si `storage_type="sqlite"` y `workspace_path` está especificado:
-       → Buscar SQLite en {workspace_path}/.codebase/vectors.db
-       → Si existe: usar SQLite
-       → Si NO existe: fallback a Qdrant (calcular colección desde workspace_path)
-
-    3. Si `storage_type="qdrant"` (default) y `workspace_path` está especificado:
-       → Calcular colección Qdrant desde workspace_path
-       → Usar Qdrant
+    2. Si solo se proporciona `workspace_path`:
+       → Calcular la colección Qdrant asociada al workspace
+       → Si no está disponible, recurrir al índice local configurado para ese workspace
 
     Args:
         query: Texto natural a buscar en el código (ej: 'función de autenticación', 'manejo de errores')
         workspace_path: Ruta del workspace a visitar (opcional si qdrant_collection está presente)
         qdrant_collection: Nombre de colección Qdrant explícito (prioridad máxima)
-        storage_type: Tipo de storage preferido: "sqlite" o "qdrant" (default: "qdrant")
+        storage_type: Tipo de storage preferido (default: "qdrant")
         refined_answer: Si True, genera un brief con análisis LLM antes de los resultados (default: False)
         max_results: Número máximo de archivos únicos a retornar (default: 20)
         ctx: FastMCP context for logging
@@ -594,13 +587,6 @@ async def visit_other_project(
         Resultados de búsqueda con merge inteligente, formato texto plano, opcionalmente con brief LLM
 
     Examples:
-        # Buscar en SQLite de otro proyecto
-        visit_other_project(
-            query="authentication logic",
-            workspace_path="/path/to/other/project",
-            storage_type="sqlite"
-        )
-
         # Buscar en colección Qdrant específica con brief
         visit_other_project(
             query="payment processing",
@@ -625,7 +611,7 @@ async def visit_other_project(
         else:
             print(f"[Visit Other Project] Query: {query}, Workspace: {workspace_path}, Collection: {qdrant_collection}, Storage: {storage_type}", file=sys.stderr)
 
-        # Paso 1: Resolver storage (SQLite o Qdrant)
+        # Paso 1: Resolver storage (según disponibilidad detectada)
         try:
             resolver = get_storage_resolver()
             resolution = resolver.resolve(
@@ -642,7 +628,7 @@ async def visit_other_project(
         vector = await embedder.create_embedding(query)
 
         if resolution.storage_type == "sqlite":
-            # Buscar en SQLite
+            # Buscar en índice local
             raw_results = await _search_sqlite_vectors(
                 db_path=resolution.sqlite_path,
                 vector=vector,
@@ -946,4 +932,3 @@ Commits found: {len(results)}
 if __name__ == "__main__":
     print("[MCP] Servidor `sqlite-semantic-search` inicializado y listo.", file=sys.stderr)
     mcp.run()
-
