@@ -70,6 +70,19 @@ class Settings(BaseSettings):
     mcp_codebase_search_min_score: float = Field(default=0.1, ge=0.0, le=1.0)
     mcp_codebase_search_max_results: int = Field(default=20, ge=1, le=100)
 
+    # Native rerank configuration
+    # If True, use a native reranker (e.g., Voyage) instead of LLM judge
+    mcp_codebase_native_rerank: bool = False
+    # Voyage API key for reranking
+    mcp_codebase_voyage_api_key: Optional[str] = None
+    # Voyage rerank model to use when native rerank is enabled
+    # Options: "rerank-2.5", "rerank-2.5-lite", "rerank-2", "rerank-2-lite", "rerank-1", "rerank-lite-1"
+    mcp_codebase_voyage_rerank_model: Optional[str] = "rerank-2-lite"
+    # Number of top results to return from Voyage rerank (None = return all)
+    mcp_codebase_voyage_top_k: Optional[int] = None
+    # Whether to truncate long documents automatically
+    mcp_codebase_voyage_truncation: bool = True
+
     # Properties for easier access
     @property
     def default_workspace_path(self) -> Optional[str]:
@@ -162,6 +175,26 @@ class Settings(BaseSettings):
     @property
     def enable_rerank(self) -> bool:
         return self.mcp_codebase_enable_rerank
+
+    @property
+    def native_rerank(self) -> bool:
+        return self.mcp_codebase_native_rerank
+
+    @property
+    def voyage_api_key(self) -> Optional[str]:
+        return self.mcp_codebase_voyage_api_key
+
+    @property
+    def voyage_rerank_model(self) -> Optional[str]:
+        return self.mcp_codebase_voyage_rerank_model
+
+    @property
+    def voyage_top_k(self) -> Optional[int]:
+        return self.mcp_codebase_voyage_top_k
+
+    @property
+    def voyage_truncation(self) -> bool:
+        return self.mcp_codebase_voyage_truncation
 
 
 # Global settings instance

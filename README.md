@@ -92,7 +92,18 @@ When using `refined_answer=True`, the system uses an **LLM (Judge)** to:
 **Configuration:**
 
 ```bash
-# Judge/LLM settings (for refined results)
+# Reranking: Choose between Voyage AI or LLM Judge
+
+# Option 1: Voyage AI Native Reranker
+# Fast, specialized reranking model (~200ms)
+# Get FREE API key at: https://www.voyageai.com/ (generous free tier available)
+MCP_CODEBASE_NATIVE_RERANK=true
+MCP_CODEBASE_VOYAGE_API_KEY=pa-your-voyage-api-key
+MCP_CODEBASE_VOYAGE_RERANK_MODEL=rerank-2.5  # Options: rerank-2.5, rerank-2.5-lite, rerank-2, rerank-2-lite
+
+# Option 2: LLM Judge
+# Flexible, can provide detailed explanations (~2-5s)
+# Only used when NATIVE_RERANK=false
 MCP_CODEBASE_JUDGE_PROVIDER=openai-compatible
 MCP_CODEBASE_JUDGE_API_KEY=your-api-key
 MCP_CODEBASE_JUDGE_BASE_URL=https://your-llm-endpoint.com/v1
@@ -101,17 +112,31 @@ MCP_CODEBASE_JUDGE_MAX_TOKENS=32000
 MCP_CODEBASE_JUDGE_TEMPERATURE=0.0
 ```
 
-**When NOT to use refined results:**
-- Quick searches where speed matters
-- Budget constraints (LLM calls cost money/tokens)
-- Simple queries with obvious answers
-- When you want raw vector similarity scores
+### Reranking Options
 
-**When TO use refined results:**
+**Voyage AI Native Rerank:**
+- Fast (~200ms response time)
+- Specialized reranking models
+- Cost-effective for high-volume usage
+- Free tier available at [voyageai.com](https://www.voyageai.com/)
+- +42% improvement in relevance scores vs pure vector search
+
+**LLM Judge:**
+- Flexible, can provide explanations and reasoning
+- Uses general-purpose LLM
+- Response time: ~2-5s
+- Good for complex analysis with detailed context
+
+**When to use reranking:**
 - Complex architectural questions
 - Finding patterns across multiple files
 - Understanding relationships between components
-- When you need contextual explanations
+- Production deployments requiring high accuracy
+
+**When NOT to use reranking:**
+- Quick searches where raw speed is priority
+- Simple queries with obvious answers
+- When you want raw vector similarity scores
 
 ### 3. Vector Storage Backends
 
@@ -617,8 +642,10 @@ semantic_search/
 │   ├── embedder.py            # Embedding client (OpenAI-compatible)
 │   ├── judge.py               # LLM client for reranking (text-based)
 │   ├── text_judge.py          # LLM client (JSON Schema structured)
+│   ├── voyage_reranker.py     # Voyage AI native reranker client
 │   └── qdrant_store.py        # Qdrant vector store client
-├── tests/
+├── adhoctests/
+│   ├── comparison_rerank_vs_no_rerank.py  # Compare Voyage vs no rerank
 │   ├── test_all_tools.py      # Integration tests
 │   ├── test_search.py         # Basic search tests
 │   └── test_structured_output.py  # Structured output tests

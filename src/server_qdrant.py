@@ -19,6 +19,7 @@ from chunk_merger import smart_merge_search_results
 from storage_resolver import StorageResolver
 from text_judge import TextDirectJudge, SearchResult as TextJudgeSearchResult
 from qdrant_store import QdrantStore
+from voyage_reranker import VoyageReranker
 
 
 @dataclass
@@ -41,6 +42,7 @@ mcp = FastMCP(
 _embedder = None
 _qdrant_store = None
 _storage_resolver = None
+_voyage_reranker = None
 
 def get_embedder():
     """Lazy initialization of Embedder."""
@@ -71,6 +73,28 @@ def get_storage_resolver():
     if _storage_resolver is None:
         _storage_resolver = StorageResolver(qdrant_store=get_qdrant_store())
     return _storage_resolver
+
+def get_voyage_reranker():
+    """Lazy initialization of VoyageReranker."""
+    global _voyage_reranker
+    if _voyage_reranker is None:
+        if not settings.voyage_api_key:
+            raise ValueError(
+                "Voyage API key is required when native_rerank is enabled.\n"
+                "Set MCP_CODEBASE_VOYAGE_API_KEY in your environment."
+            )
+        if not settings.voyage_rerank_model:
+            raise ValueError(
+                "Voyage rerank model is required when native_rerank is enabled.\n"
+                "Set MCP_CODEBASE_VOYAGE_RERANK_MODEL in your environment."
+            )
+        _voyage_reranker = VoyageReranker(
+            api_key=settings.voyage_api_key,
+            model=settings.voyage_rerank_model,
+            top_k=settings.voyage_top_k,
+            truncation=settings.voyage_truncation
+        )
+    return _voyage_reranker
 
 
 def _load_state_json(workspace_path: str) -> dict:
@@ -493,6 +517,38 @@ async def semantic_search(
             )
             for r in raw_results_qdrant
         ]
+
+        # Paso 2.5: RERANK con Voyage AI si está habilitado
+        # Si native_rerank=True, usar Voyage en lugar de LLM judge
+        if settings.native_rerank and raw_results:
+            if ctx:
+                await ctx.info(f"[Semantic Search] Reranking con Voyage AI (modelo: {settings.voyage_rerank_model})...")
+            else:
+                print(f"[Semantic Search] Reranking con Voyage AI (modelo: {settings.voyage_rerank_model})...", file=sys.stderr)
+
+            try:
+                reranker = get_voyage_reranker()
+                raw_results = await reranker.rerank(
+                    query=query,
+                    results=raw_results,
+                    top_k=max_results  # Limitar a max_results después del rerank
+                )
+
+                if ctx:
+                    await ctx.info(f"[Semantic Search] Reranking completado: {len(raw_results)} resultados")
+                else:
+                    print(f"[Semantic Search] Reranking completado: {len(raw_results)} resultados", file=sys.stderr)
+
+                # IMPORTANTE: Si usamos Voyage rerank, NO usamos LLM judge
+                refined_answer = False
+
+            except Exception as e:
+                error_msg = f"Voyage reranking falló: {str(e)}"
+                if ctx:
+                    await ctx.error(f"[Semantic Search] {error_msg}")
+                else:
+                    print(f"[Semantic Search] {error_msg}", file=sys.stderr)
+                raise ToolError(error_msg)
 
         # Paso 3: Fusionar chunks por archivo usando smart_merge
         if ctx:
