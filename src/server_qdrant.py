@@ -1,6 +1,7 @@
 """FastMCP server for semantic search in Qdrant (reads state.json)."""
 import sys
 import json
+import math
 from typing import Optional, Literal
 from pathlib import Path
 from dataclasses import dataclass
@@ -362,36 +363,63 @@ Genera un brief conciso en texto plano (sin markdown, sin formato especial). Enf
         return ""
 
 
-def _format_search_results(query: str, workspace_path: str, merged_results: dict, refined_brief: str = "") -> str:
+def _format_search_results(
+    query: str,
+    workspace_path: str,
+    merged_results: dict,
+    refined_brief: str = "",
+    pagination: Optional[dict] = None
+) -> str:
     """Formatea los resultados de búsqueda semántica fusionados.
 
     Args:
         query: La consulta de búsqueda
         workspace_path: Ruta del workspace
-        merged_results: Dict con resultados fusionados por archivo
+        merged_results: Dict con resultados fusionados por archivo (paginados)
         refined_brief: Brief opcional generado por LLM
+        pagination: Información de paginación (total, página actual, tamaño)
 
     Returns:
         String formateado con los resultados (TEXTO PLANO, sin markdown)
     """
+    total_available = pagination.get("total_files", len(merged_results)) if pagination else len(merged_results)
+    current_page = pagination.get("page") if pagination else None
+    total_pages = pagination.get("total_pages") if pagination else None
+    page_size = pagination.get("page_size") if pagination else None
+
     if not merged_results:
-        return f"""Resultados de búsqueda semántica
+        lines = [
+            "Resultados de búsqueda semántica",
+            "",
+            f"Workspace: {workspace_path}",
+            f"Query: {query}",
+            f"Archivos encontrados (total): {total_available}",
+        ]
+        if pagination:
+            lines.append(
+                f"Paginación: página {current_page} de {max(total_pages, 1)} (tamaño {page_size})"
+            )
+        lines.append("")
+        lines.append("No se encontraron resultados.")
+        lines.append("")
+        return "\n".join(lines)
 
-Workspace: {workspace_path}
-Query: {query}
+    header_lines = [
+        "Resultados de búsqueda semántica",
+        "",
+        f"Workspace: {workspace_path}",
+        f"Query: {query}",
+        f"Archivos encontrados (total): {total_available}",
+    ]
 
-No se encontraron resultados.
-"""
+    if pagination:
+        header_lines.append(
+            f"Mostrando {len(merged_results)} resultados (página {current_page} de {max(total_pages, 1)})"
+        )
+        header_lines.append(f"Tamaño de página: {page_size}")
 
-    output = f"""Resultados de búsqueda semántica
-
-Workspace: {workspace_path}
-Query: {query}
-Archivos encontrados: {len(merged_results)}
-
-{'=' * 80}
-
-"""
+    header_lines.extend(["", "{}".format('=' * 80), ""])
+    output = "\n".join(header_lines)
 
     # Agregar brief refinado si existe
     if refined_brief:
@@ -422,6 +450,8 @@ async def semantic_search(
     qdrant_collection: str,
     max_results: int = 20,
     refined_answer: bool = False,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     ctx: Context = None
 ) -> str:
     """Realiza búsqueda semántica en Qdrant.
@@ -452,6 +482,8 @@ async def semantic_search(
         refined_answer: Si True, genera un brief con análisis de relevancia usando LLM.
                        El brief identifica archivos relevantes, ruido/boilerplate, y gaps
                        en imports/referencias. Se inserta antes de los resultados. (default: False)
+        page: Número de página (1-based). Si no se envía, se usa 1 por defecto.
+        page_size: Resultados por página. Default 10 (limitado por max_results y configuración).
         ctx: FastMCP context for logging
 
     Returns:
@@ -470,10 +502,34 @@ async def semantic_search(
 
         collection_name = qdrant_collection.strip()
 
+        # Configurar paginación (default página 1, tamaño 10)
+        page = 1 if page is None else page
+        page_size = 10 if page_size is None else page_size
+
+        if page < 1:
+            raise ToolError("El parámetro 'page' debe ser >= 1.")
+        if page_size < 1:
+            raise ToolError("El parámetro 'page_size' debe ser >= 1.")
+
+        max_total_results = min(settings.search_max_results, max_results)
+        if max_total_results < 1:
+            raise ToolError("El parámetro 'max_results' debe ser >= 1.")
+
+        effective_page_size = min(page_size, max_total_results)
+        requested_limit = page * effective_page_size
+        total_limit = min(max_total_results, requested_limit)
+
         if ctx:
-            await ctx.info(f"[Semantic Search] Colección: {collection_name}, Query: {query}")
+            await ctx.info(
+                f"[Semantic Search] Colección: {collection_name}, Query: {query}, "
+                f"page={page}, page_size={effective_page_size}, limit={total_limit}"
+            )
         else:
-            print(f"[Semantic Search] Colección: {collection_name}, Query: {query}", file=sys.stderr)
+            print(
+                f"[Semantic Search] Colección: {collection_name}, Query: {query}, "
+                f"page={page}, page_size={effective_page_size}, limit={total_limit}",
+                file=sys.stderr
+            )
 
         # Paso 1: Crear embedding de la query
         if ctx:
@@ -502,7 +558,7 @@ async def semantic_search(
             workspace_path="",  # No usado cuando collection_name está presente
             directory_prefix=None,
             min_score=settings.search_min_score,
-            max_results=settings.search_max_results,
+            max_results=total_limit,
             collection_name=collection_name
         )
 
@@ -565,7 +621,7 @@ async def semantic_search(
         merged_results = smart_merge_search_results(
             workspace_path="",  # No workspace path available, merge without file validation
             search_results=raw_results_tuples,
-            max_files=max_results  # Limitar a max_results archivos únicos
+            max_files=total_limit  # Limitar a los resultados pedidos (paginación incluida)
         )
 
         # Log de archivos únicos
@@ -574,19 +630,59 @@ async def semantic_search(
         else:
             print(f"[Semantic Search] Procesados {len(merged_results)} archivos únicos", file=sys.stderr)
 
+        # Aplicar paginación a los resultados fusionados
+        merged_items = list(merged_results.items())
+        total_files = len(merged_items)
+        total_pages = math.ceil(total_files / effective_page_size) if total_files else 0
+
+        if total_files > 0 and total_pages and page > total_pages:
+            raise ToolError(
+                f"La página solicitada ({page}) excede el total disponible ({total_pages})."
+            )
+
+        start_index = (page - 1) * effective_page_size
+        end_index = start_index + effective_page_size
+        paginated_items = merged_items[start_index:end_index] if merged_items else []
+        paginated_results = dict(paginated_items)
+
+        pagination_info = {
+            "page": page,
+            "page_size": effective_page_size,
+            "total_files": total_files,
+            "total_pages": total_pages,
+        }
+
+        if ctx:
+            await ctx.info(
+                f"[Semantic Search] Mostrando {len(paginated_results)} resultados de "
+                f"{total_files} (página {page}/{max(total_pages, 1) if total_pages else 1})"
+            )
+        else:
+            print(
+                f"[Semantic Search] Mostrando {len(paginated_results)} resultados de "
+                f"{total_files} (página {page}/{max(total_pages, 1) if total_pages else 1})",
+                file=sys.stderr
+            )
+
         # Generar brief refinado si se solicita
         refined_brief = ""
-        if refined_answer and merged_results:
+        if refined_answer and paginated_results:
             if ctx:
                 await ctx.info(f"[Semantic Search] Generando brief refinado con LLM...")
             else:
                 print(f"[Semantic Search] Generando brief refinado con LLM...", file=sys.stderr)
 
-            refined_brief = await _generate_refined_brief(query, merged_results, ctx)
+            refined_brief = await _generate_refined_brief(query, paginated_results, ctx)
 
         # Formatear y retornar resultados
         display_workspace = f"colección '{collection_name}'"
-        return _format_search_results(query, display_workspace, merged_results, refined_brief)
+        return _format_search_results(
+            query,
+            display_workspace,
+            paginated_results,
+            refined_brief,
+            pagination=pagination_info
+        )
 
     except ToolError:
         raise
