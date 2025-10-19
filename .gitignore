@@ -54,3 +54,6 @@ htmlcov/
 
 # Codebase indexing
 .codebase/
+
+# Local sqlite/DB artifacts
+agents_messaging.db

@@ -2,7 +2,8 @@
 import sys
 import json
 import math
-from typing import Optional, Literal
+import asyncio
+from typing import Optional, Literal, Dict, Tuple, Set, List
 from pathlib import Path
 from dataclasses import dataclass
 from fastmcp import FastMCP, Context
@@ -363,6 +364,42 @@ Genera un brief conciso en texto plano (sin markdown, sin formato especial). Enf
         return ""
 
 
+def _prepare_query_variants(
+    base_query: str,
+    provided_variants: Optional[List[str]] = None,
+    max_additional: int = 5
+) -> List[str]:
+    """Normaliza y deduplica las queries a ejecutar en la búsqueda paralela.
+
+    Siempre incluye la consulta base y agrega hasta ``max_additional`` variantes adicionales
+    proporcionadas por el agente que invoca la herramienta.
+    """
+    unique_variants: List[str] = []
+    seen: Set[str] = set()
+
+    def _add_variant(text: Optional[str]) -> None:
+        if not text:
+            return
+        normalized = text.strip()
+        if not normalized:
+            return
+        lowered = normalized.lower()
+        if lowered in seen:
+            return
+        seen.add(lowered)
+        unique_variants.append(normalized)
+
+    _add_variant(base_query)
+
+    if provided_variants:
+        for variant in provided_variants:
+            _add_variant(variant)
+            if len(unique_variants) >= max_additional + 1:  # base + adicionales
+                break
+
+    return unique_variants
+
+
 def _format_search_results(
     query: str,
     workspace_path: str,
@@ -433,9 +470,15 @@ def _format_search_results(
 
     # Agregar cada archivo con su contenido fusionado
     for idx, (file_path, data) in enumerate(merged_results.items(), 1):
+        variants = data.get("query_variants")
+        variants_block = ""
+        if variants:
+            variants_lines = ["Consultas que lo devolvieron:"] + [f"  - {variant}" for variant in variants]
+            variants_block = "\n".join(variants_lines) + "\n\n"
+
         output += f"""{idx}. {file_path}
 
-{data['content']}
+{variants_block}{data['content']}
 
 {'=' * 80}
 
@@ -697,6 +740,287 @@ async def semantic_search(
 
 
 
+
+
+@mcp.tool
+async def semantic_parallel_search(
+    query: str,
+    qdrant_collection: str,
+    max_results: int = 20,
+    queries: Optional[List[str]] = None,
+    refined_answer: bool = False,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+    ctx: Context = None
+) -> str:
+    """Realiza múltiples búsquedas semánticas en paralelo usando queries proporcionadas por el agente.
+
+    Esta herramienta aplica un enfoque multi-query:
+    1. Recibe variaciones específicas de la consulta original desde el agente invocador
+    2. Ejecuta búsquedas paralelas en Qdrant para cada variación
+    3. Fusiona y deduplica los resultados por archivo + rango de líneas
+    4. Opcionalmente aplica reranking nativo (Voyage) y brief LLM
+
+    Args:
+        query: Consulta principal en lenguaje natural
+        qdrant_collection: Colección Qdrant a consultar
+        max_results: Número máximo de resultados únicos (archivos) a devolver (default: 20)
+        queries: Lista de variaciones adicionales generadas por el agente (máximo 5 consideradas)
+        refined_answer: Si True, genera brief LLM (se omite si se usa rerank nativo)
+        page: Número de página (1-based). Default 1.
+        page_size: Cantidad de archivos por página. Default 10.
+        ctx: Contexto FastMCP para logging
+
+    Returns:
+        Resultados semánticos fusionados en texto plano, con información de queries utilizadas.
+    """
+    try:
+        if not query or not query.strip():
+            raise ToolError("El parámetro 'query' es requerido y no puede estar vacío.")
+        if not qdrant_collection or not qdrant_collection.strip():
+            raise ToolError("El parámetro 'qdrant_collection' es requerido y no puede estar vacío.")
+
+        collection_name = qdrant_collection.strip()
+        base_query = query.strip()
+
+        page = 1 if page is None else page
+        page_size = 10 if page_size is None else page_size
+
+        if page < 1:
+            raise ToolError("El parámetro 'page' debe ser >= 1.")
+        if page_size < 1:
+            raise ToolError("El parámetro 'page_size' debe ser >= 1.")
+
+        max_total_results = min(settings.search_max_results, max_results)
+        if max_total_results < 1:
+            raise ToolError("El parámetro 'max_results' debe ser >= 1.")
+
+        effective_page_size = min(page_size, max_total_results)
+        requested_limit = page * effective_page_size
+        total_limit = min(max_total_results, requested_limit)
+
+        query_variants = _prepare_query_variants(base_query, queries)
+
+        if ctx:
+            await ctx.info(
+                f"[Parallel Search] Colección: {collection_name}, Queries={len(query_variants)}, "
+                f"page={page}, page_size={effective_page_size}, limit={total_limit}"
+            )
+        else:
+            print(
+                f"[Parallel Search] Colección: {collection_name}, Queries={len(query_variants)}, "
+                f"page={page}, page_size={effective_page_size}, limit={total_limit}",
+                file=sys.stderr
+            )
+
+        if ctx:
+            await ctx.info(
+                "[Parallel Search] Queries utilizadas: " + "; ".join(query_variants)
+            )
+        else:
+            print(
+                "[Parallel Search] Queries utilizadas: " + "; ".join(query_variants),
+                file=sys.stderr
+            )
+
+        # Paso 2: Crear embeddings en paralelo
+        embedder = get_embedder()
+        if ctx:
+            await ctx.info(
+                f"[Parallel Search] Generando embeddings para {len(query_variants)} queries"
+            )
+        else:
+            print(
+                f"[Parallel Search] Generando embeddings para {len(query_variants)} queries",
+                file=sys.stderr
+            )
+
+        vectors = await asyncio.gather(
+            *(embedder.create_embedding(q) for q in query_variants)
+        )
+
+        # Paso 3: Ejecutar búsquedas paralelas en Qdrant
+        qdrant = get_qdrant_store()
+        if ctx:
+            await ctx.info("[Parallel Search] Ejecutando búsquedas en Qdrant...")
+        else:
+            print("[Parallel Search] Ejecutando búsquedas en Qdrant...", file=sys.stderr)
+
+        search_tasks = [
+            qdrant.search(
+                vector=vector,
+                workspace_path="",
+                directory_prefix=None,
+                min_score=settings.search_min_score,
+                max_results=total_limit,
+                collection_name=collection_name
+            )
+            for vector in vectors
+        ]
+        raw_results_per_query = await asyncio.gather(*search_tasks)
+
+        # Paso 4: Deduplicar resultados por archivo+rangos
+        dedup_map: Dict[Tuple[str, int, int], SearchResult] = {}
+        source_map: Dict[Tuple[str, int, int], Set[str]] = {}
+
+        for variant, raw_results in zip(query_variants, raw_results_per_query):
+            for result in raw_results:
+                key = (result.file_path, result.start_line, result.end_line)
+                if key not in dedup_map or result.score > dedup_map[key].score:
+                    dedup_map[key] = SearchResult(
+                        file_path=result.file_path,
+                        code_chunk=result.code_chunk,
+                        start_line=result.start_line,
+                        end_line=result.end_line,
+                        score=result.score
+                    )
+                source_map.setdefault(key, set()).add(variant)
+
+        aggregated_results = list(dedup_map.values())
+        aggregated_results.sort(key=lambda r: r.score, reverse=True)
+        aggregated_results = aggregated_results[:total_limit]
+
+        if ctx:
+            await ctx.info(
+                f"[Parallel Search] Resultados únicos tras dedupe: {len(aggregated_results)}"
+            )
+        else:
+            print(
+                f"[Parallel Search] Resultados únicos tras dedupe: {len(aggregated_results)}",
+                file=sys.stderr
+            )
+
+        # Ajustar map de fuentes a los resultados finales
+        valid_keys = {
+            (r.file_path, r.start_line, r.end_line) for r in aggregated_results
+        }
+        file_sources: Dict[str, Set[str]] = {}
+        for key, sources in source_map.items():
+            if key in valid_keys:
+                file_sources.setdefault(key[0], set()).update(sources)
+
+        # Paso 5: Rerank opcional con Voyage
+        if settings.native_rerank and aggregated_results:
+            if ctx:
+                await ctx.info(
+                    f"[Parallel Search] Reranking con Voyage AI (modelo: {settings.voyage_rerank_model})"
+                )
+            else:
+                print(
+                    f"[Parallel Search] Reranking con Voyage AI (modelo: {settings.voyage_rerank_model})",
+                    file=sys.stderr
+                )
+
+            try:
+                reranker = get_voyage_reranker()
+                aggregated_results = await reranker.rerank(
+                    query=base_query,
+                    results=aggregated_results,
+                    top_k=max_total_results
+                )
+
+                valid_keys = {
+                    (r.file_path, r.start_line, r.end_line) for r in aggregated_results
+                }
+                file_sources = {}
+                for key, sources in source_map.items():
+                    if key in valid_keys:
+                        file_sources.setdefault(key[0], set()).update(sources)
+
+                refined_answer = False
+
+                if ctx:
+                    await ctx.info(
+                        f"[Parallel Search] Reranking completado: {len(aggregated_results)} resultados"
+                    )
+                else:
+                    print(
+                        f"[Parallel Search] Reranking completado: {len(aggregated_results)} resultados",
+                        file=sys.stderr
+                    )
+
+            except Exception as e:
+                error_msg = f"Voyage reranking falló: {str(e)}"
+                if ctx:
+                    await ctx.error(f"[Parallel Search] {error_msg}")
+                else:
+                    print(f"[Parallel Search] {error_msg}", file=sys.stderr)
+                raise ToolError(error_msg)
+
+        # Paso 6: Fusionar resultados por archivo
+        results_tuples = [
+            (r.file_path, r.code_chunk, r.start_line, r.end_line, 1.0 - r.score)
+            for r in aggregated_results
+        ]
+
+        merged_results = smart_merge_search_results(
+            workspace_path="",
+            search_results=results_tuples,
+            max_files=total_limit
+        )
+
+        # Enriquecer con queries utilizadas
+        for file_path, data in merged_results.items():
+            variants = sorted(file_sources.get(file_path, []))
+            if variants:
+                data["query_variants"] = variants
+
+        # Paso 7: Paginación
+        merged_items = list(merged_results.items())
+        total_files = len(merged_items)
+        total_pages = math.ceil(total_files / effective_page_size) if total_files else 0
+
+        if total_files > 0 and total_pages and page > total_pages:
+            raise ToolError(
+                f"La página solicitada ({page}) excede el total disponible ({total_pages})."
+            )
+
+        start_index = (page - 1) * effective_page_size
+        end_index = start_index + effective_page_size
+        paginated_items = merged_items[start_index:end_index] if merged_items else []
+        paginated_results = dict(paginated_items)
+
+        pagination_info = {
+            "page": page,
+            "page_size": effective_page_size,
+            "total_files": total_files,
+            "total_pages": total_pages,
+        }
+
+        # Paso 8: Brief refinado opcional
+        refined_brief = ""
+        if refined_answer and paginated_results:
+            if ctx:
+                await ctx.info("[Parallel Search] Generando brief refinado con LLM...")
+            else:
+                print("[Parallel Search] Generando brief refinado con LLM...", file=sys.stderr)
+
+            refined_brief = await _generate_refined_brief(base_query, paginated_results, ctx)
+
+        # Paso 9: Formatear respuesta
+        queries_block = ["Consultas utilizadas:"] + [f"- {q}" for q in query_variants]
+        queries_section = "\n".join(queries_block)
+
+        results_body = _format_search_results(
+            base_query,
+            f"colección '{collection_name}'",
+            paginated_results,
+            refined_brief,
+            pagination=pagination_info
+        )
+
+        return f"{queries_section}\n\n{results_body}"
+
+    except ToolError:
+        raise
+
+    except Exception as e:
+        error_msg = f"Error inesperado: {str(e)}"
+        if ctx:
+            await ctx.error(f"[Parallel Search] {error_msg}")
+        else:
+            print(f"[Parallel Search] {error_msg}", file=sys.stderr)
+        raise ToolError(error_msg)
 
 
 @mcp.tool
