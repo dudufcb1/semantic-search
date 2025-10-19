@@ -393,6 +393,43 @@ Search in a different workspace/codebase.
 }
 ```
 
+## 🚀 Big Game Changer: semantic_parallel_search
+
+### Why this matters
+Previously, every semantic search relied on a single query or on LLM-generated variations. That made it hard to control coverage and slowed things down when the model had to invent extra prompts.
+
+### What it does
+`semantic_parallel_search` (src/server_qdrant.py:746-1117) lets the **calling agent control 100% of the queries**:
+
+1. **Directed multi-query**: you decide up to five additional variations (`queries`) that run in parallel. No extra LLM round-trip needed.
+2. **Smart deduplication**: merges results by file + line range, removing noise and duplicates.
+3. **Optional rerank**: if `settings.native_rerank` is enabled, Voyage still reranks just like before.
+4. **Optional brief**: the LLM is only used when you request `refined_answer=True`; otherwise you get raw merged results straight from Qdrant.
+
+### Why it’s a game changer
+- **Tighter coverage**: hit different angles (webhooks, validation, edge cases) in a single call.
+- **Faster execution**: `asyncio.gather` builds embeddings and runs Qdrant searches concurrently without waiting for LLM creativity.
+- **Traceable output**: each file in the response lists the exact queries that surfaced it ("Consultas que lo devolvieron").
+
+### How to use it
+```python
+# Example from an MCP client
+result = semantic_parallel_search(
+    query="How do we handle payment processing?",
+    qdrant_collection="codebase-1d85d0a83c1348b3be",
+    queries=[
+        "payment gateway integration stripe",
+        "transaction validation error handling",
+        "payment confirmation webhooks"
+    ],
+    max_results=20,
+    refined_answer=False
+)
+```
+
+**Note**: if `queries` is `None` or empty, the tool just reuses the base query. The response annotates each file with the list of queries that returned it, so you can see which phrasing worked.
+
+
 ## Understanding .codebase/state.json
 
 The indexer (codebase-index-cli) creates a `.codebase/` directory in your project with this structure:
