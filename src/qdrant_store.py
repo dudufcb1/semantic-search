@@ -148,10 +148,26 @@ class QdrantStore:
         for point in search_result:
             if not point.payload:
                 continue
-            
+
+            # Extract values without modifying them
+            file_path = point.payload.get("filePath", "")
+            code_chunk = point.payload.get("codeChunk")
+
+            # Validate type and non-empty content
+            # IMPORTANT: Don't use strip() on the value itself, only for validation
+            if not isinstance(code_chunk, str):
+                continue
+
+            # Validate that it has content (but preserve original indentation)
+            if len(code_chunk) == 0 or not code_chunk.strip():
+                continue
+
+            if not isinstance(file_path, str) or not file_path.strip():
+                continue
+
             results.append(SearchResult(
-                file_path=point.payload.get("filePath", ""),
-                code_chunk=point.payload.get("codeChunk", ""),
+                file_path=file_path,
+                code_chunk=code_chunk,  # Original intact - preserves indentation
                 start_line=point.payload.get("startLine", 0),
                 end_line=point.payload.get("endLine", 0),
                 score=point.score

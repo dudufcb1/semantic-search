@@ -77,11 +77,25 @@ class VoyageReranker:
         if not results:
             return []
 
+        # Defensive filter: skip results with empty code_chunks
+        # This is a backup in case qdrant_store validation is bypassed
+        valid_results = [
+            r for r in results
+            if isinstance(r.code_chunk, str) and r.code_chunk.strip()
+        ]
+
+        if not valid_results:
+            print(
+                "[Voyage Reranker] WARNING: No valid results to rerank (all code_chunks empty)",
+                file=sys.stderr
+            )
+            return []
+
         # Use provided top_k or fall back to instance default
         effective_top_k = top_k if top_k is not None else self.top_k
 
-        # Extract documents (code chunks) from results
-        documents = [r.code_chunk for r in results]
+        # Extract documents (code chunks) from valid results
+        documents = [r.code_chunk for r in valid_results]
 
         print(
             f"[Voyage Reranker] Reranking {len(documents)} documents with model {self.model}",
@@ -106,7 +120,8 @@ class VoyageReranker:
             # Rebuild SearchResult objects in reranked order with new scores
             reranked_results = []
             for result in reranking.results:
-                original_result = results[result.index]
+                # Map index to valid_results (not original results)
+                original_result = valid_results[result.index]
 
                 # Create new SearchResult with Voyage relevance score
                 reranked_result = SearchResult(

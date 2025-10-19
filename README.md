@@ -708,6 +708,22 @@ curl http://localhost:6333/collections/<collection-name>
 curl http://localhost:6333/collections/<collection-name>/points/count
 ```
 
+### Voyage AI Reranking Errors
+
+**Problem:** `Voyage reranking failed: Input cannot contain empty strings or empty lists`
+
+**Cause:** Search results contain code chunks with empty content, which Voyage API rejects
+
+**Solution:** Fixed in version with commit "fix: Filter empty code chunks to prevent Voyage API errors"
+
+The system now:
+- Filters out empty code chunks during Qdrant result processing
+- Validates code chunks before sending to Voyage API
+- Preserves original indentation and line numbering
+- Maintains smart merge functionality (multiple chunks per file)
+
+**Note:** When native reranking is enabled (`MCP_CODEBASE_NATIVE_RERANK=true`), the LLM judge summary is automatically disabled to avoid redundant processing. This is expected behavior.
+
 ### MCP Server Logs
 
 Check MCP client logs for server stderr:
